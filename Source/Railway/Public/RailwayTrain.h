@@ -150,7 +150,19 @@ public:
     bool FindRoutePlanToTrackStation(const FRailwayTrackLocation& Start, ARailwayTrack* DestinationTrack, FGuid StationId,
         FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations = false) const;
 
-    // A rejected replacement leaves the current run intact. Exact-start stops remain pending.
+    /** 返回车体当前所在的轨道与样条原生里程，可直接连接寻路节点的 Start。 */
+    UFUNCTION(BlueprintPure, Category="Railway|Route")
+    bool GetCurrentTrackLocation(FRailwayTrackLocation& OutLocation) const;
+
+    /** 从当前位置接续新计划；同轨反复经过时，SectionHint 可指定新计划中的区间下标。 */
+    UFUNCTION(BlueprintCallable, Category="Railway|Route", BlueprintAuthorityOnly, meta=(AdvancedDisplay="SectionHint"))
+    bool ReplacePreparedRoute(const FRailwayPlan& Plan, FString& OutError, int32 SectionHint = -1);
+
+    /** 明确从给定的新计划累计里程重新发车，会定位车体并清零速度和驾驶输入。 */
+    UFUNCTION(BlueprintCallable, Category="Railway|Route", BlueprintAuthorityOnly)
+    bool RestartPreparedRouteAtDistance(const FRailwayPlan& Plan, double StartDistance, FString& OutError);
+
+    /** 首次发车使用 StartDistance；已有计划时自动从实际车位换线。 */
     UFUNCTION(BlueprintCallable, Category="Railway|Route", BlueprintAuthorityOnly)
     bool StartPreparedRoute(const FRailwayPlan& Plan, double StartDistance, FString& OutError);
 
@@ -227,6 +239,8 @@ private:
     void PublishMoveState(bool bForce);
     void TickClientPresentation();
     FRailwayMoveBuffer MoveBuffer;
+    // 客户端当前显示姿态所属的计划版本。
+    uint32 PresentedPlanRevision = 0;
 
     // 累计段尾里程（cm），服务端换线或客户端收到计划时重建。
     TArray<double> SectionEnds;
@@ -240,8 +254,8 @@ private:
     void ResetMotion();
     void ResetPlan(ERailwayState NewState);
     void InstallPlan(FRailwayPlan&& Plan);
-    void ActivatePlan(FRailwayPreparedPlan&& Prepared, double StartDistance, int32 StopCursor, ERailwayState NewState);
-    bool ApplyReplacementPlan(FRailwayPlan&& NewPlan, double StartDistance, FString& OutError);
+    void ActivatePlan(FRailwayPreparedPlan&& Prepared, int32 StopCursor, ERailwayState NewState);
+    bool ContinuePreparedPlan(FRailwayPreparedPlan&& Prepared, bool bMatchServedStops, FString& OutError);
     bool FailRoute(const FString& Reason);
     bool UpdatePose();
 

@@ -10,8 +10,12 @@ struct FRailwayPreparedPlan
 {
     FRailwayPlan Plan;
     TArray<double> SectionEnds;
+    double StartDistance = 0;
     int32 StartSection = INDEX_NONE;
     FTransform StartPose;
+
+    // 每次更换起点同时更新里程、区间和姿态，三者始终属于同一份计划。
+    bool SetStartDistance(double Distance, FString& Error);
 };
 
 namespace Railway::Routing

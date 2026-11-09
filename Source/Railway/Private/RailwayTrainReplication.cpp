@@ -78,6 +78,7 @@ void ARailwayTrain::TickClientPresentation()
     }
 
     MoveBuffer.MarkPresented(Sample.ServerTime);
+    PresentedPlanRevision = Sample.PlanRevision;
     Leg = SectionIndex;
     Distance = Sample.Distance;
     Speed = Sample.Speed;

@@ -140,6 +140,6 @@ bool ARailwayTrain::TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FStri
         Wait = Remaining;
         bPreLeaveSent = Save.bPreLeaveSent;
     }
-    ActivatePlan(MoveTemp(Prepared), Save.Distance, Save.NextStop, Save.State);
+    ActivatePlan(MoveTemp(Prepared), Save.NextStop, Save.State);
     return true;
 }

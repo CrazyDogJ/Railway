@@ -26,5 +26,9 @@ namespace Railway::Geometry
     bool SampleIndexedPlan(const FRailwayPlan& Plan, const TArray<double>& SectionEnds, double Distance,
         int32& SectionIndex, double& TrackDistance, FTransform& Pose);
 
+    // 将轨道上的物理位置反算为新计划的累计里程，只在已连接的岔口接受相邻轨道的同一点。
+    bool FindPlanDistance(const FRailwayPlan& Plan, const TArray<double>& SectionEnds, const FRailwayTrackLocation& Location,
+        int32 SectionHint, TOptional<double> SharedPrefixDistance, double& OutDistance, FString& Error);
+
     void BuildSectionEnds(const FRailwayPlan& Plan, TArray<double>& OutEnds);
 }

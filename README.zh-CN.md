@@ -27,7 +27,13 @@
 | 场景站点 | **Find Route Plan To Station**，传入起点和 Railway Station Actor | 在目标站触发到站，按该站当前的停留时间停靠，再进入 Finished。 |
 | 轨道内嵌站点 | **Find Route Plan To Track Station**，传入起点、目标轨道和该行的 Station ID | 按站点身份停靠，支持同名站。 |
 
-例如，从 Main 的 600 cm 前往 Spur 的 350 cm，可把这两个位置传给 **Find Route Plan**。成功后在服务端调用 **Start Prepared Route**，传入 Out Plan 并将 Start Distance 设为 **0**。新计划的累计里程从所选起点开始。列车在 Automatic 模式下自行发车；仅调用寻路节点不会移动列车。起终点重合时返回零里程计划，站点目标仍执行停靠。
+例如，从 Main 的 600 cm 前往 Spur 的 350 cm，可把这两个位置传给 **Find Route Plan**。首次从这个起点发车时，在服务端调用 **Start Prepared Route**，将 Start Distance 设为 **0**。列车在 Automatic 模式下自行发车；仅调用寻路节点不会移动列车。起终点重合时返回零里程计划，站点目标仍执行停靠。
+
+**途中换目的地**。在服务端依次调用 **Get Current Track Location → Find Route Plan（或 Find Route Plan To Station）→ Replace Prepared Route**。将第一步的 Out Location 接到寻路的 Start，把寻路成功得到的 Out Plan 接到最后一步。换线节点在执行时重新取车位；若寻路后列车继续前进，只要新路线仍覆盖该点，就会从对应的新里程接续。失败时可读取 Out Error，原计划继续运行。
+
+例如列车当前位于 Main 的 700 cm。新路线从 Main 的 400 cm 顺向开始时，新计划的 Distance 为 300 cm；直接从车位开始时为 0。不同前缀或反向区间会得到不同的累计里程。列车保留驾驶输入和停站进度，速度按新计划方向换算；若速度会把车带出新行程边界，则在边界停车。新区间反向时车体朝向按新区间采样。
+
+同一车位在多圈路线中可能出现多次。几何前缀相同时沿用已确定的圈次，新计划从车位开始时优先选起点，其他歧义可用 **Replace Prepared Route** 的高级输入 **Section Hint** 指定新区间下标（从 0 起）。自由放置且尚未绑定的列车只有在 1 cm 内唯一贴合轨道时才能自动定位；交叉处可先指定 Route 首轨。
 
 三个寻路节点都有 **Stop At Intermediate Stations** 开关，默认关闭。勾选后，Out Plan 的 **Stops** 会按行驶顺序列出经过的场景站点和轨道内嵌站点。出发位置的站点会跳过；若目的站就是出发站，则仍停靠一次。指定的目的站始终排在最后，同一站次不会重复添加。目标为普通轨道位置时，列车停完沿途各站后会继续开到该位置。
 
@@ -48,7 +54,7 @@
 ## 蓝图扩展接口
 
 - **Start Route** 继续按 Route 从起点发车，并对齐有宿主的支线端点。**Build Route Plan** 只读取当前轨道几何和已加载站点，将传入的 Legs 转为 Sections 与 Stops。调用失败时读取 Out Error。运行或预览前需先完成岔口吸附。
-- **Start Prepared Route** 从 Start Distance（整条行程的累计厘米数）静止发车；起点之前的停站跳过，恰好位于起点的停站仍会触发。自建计划需自行选择合法岔口和停站；此节点检查区间、站距和段间空间连续性。失败的计划不会覆盖正在运行的行程。编制好的计划带有轨道 ID 和线路签名；自建临时站可将 Reference 的 Source 显式设为 Inline，并填写 Station。
+- **Start Prepared Route** 首次从给定的新计划累计里程静止发车，已有计划时自动按当前车位换线并忽略该输入。需要主动重置列车位置和速度时，使用 **Restart Prepared Route At Distance**。显式发车会跳过起点之前的站，恰好位于起点的站仍会触发。自建计划需自行选择合法岔口和停站；此节点检查区间、站距和段间空间连续性。失败的计划不会覆盖正在运行的行程。编制好的计划带有轨道 ID 和线路签名；自建临时站可将 Reference 的 Source 显式设为 Inline，并填写 Station。
 - **Sample Plan** 可在发车前采样已生成的计划。**Sample Route** 采样运行中的计划，返回段序号、从 Spline 首点起算的局部厘米数、车体世界姿态；布尔值表示是否有效。Section 中的 Entry Distance 是本轨道里程，Travel Distance 是沿指定方向的正长度，计划停站 Distance 是行程累计里程。编辑器预览可在列车蓝图中覆写 **Get Preview Location**，输出带方向的轨道和局部里程。该函数在编辑器会频繁调用，适合使用缓存。
 - 蓝图可读取 Active Plan、Distance、Leg、Next Stop（从零起算）、Wait（秒）、Has Sent Pre Leave 和 Get Route Length。运动参数支持运行时修改；**External Speed Limit** 为独立限速输入（cm/s，负值解除），通过现有加减速模型生效。到站、预离站和离站委托沿用原接口。
 - 锚点蓝图调用 **Set Track Anchor At Distance** 指定 Host Track 与里程（cm），传空轨道解除附着。**Project To Host** 将当前位置投影为里程，**Refresh Anchor** 按已保存的里程更新 Actor。轨道临时缩短时，超出范围的锚点与内嵌站点按末端采样；重新延长后恢复到设定里程。
@@ -78,7 +84,7 @@
 | **Server Set Drive Input** | −1 到 +1 | 正值向车头牵引，负值向车尾牵引，绝对值控制牵引力。零为惰行。行驶中给反向牵引会先减速至零，再换向。 |
 | **Server Set Brake Input** | 0 到 1 | 0 为松闸，1 为全制动。制动优先于牵引，前进和倒车时均可停车。松闸后按当前牵引输入行驶。 |
 
-**Speed** 是沿计划的有符号速度（cm/s）。倒车时 Speed 为负，Distance 递减，车身保持该段的原有朝向。Route 中的 Reverse 定义该段的车头朝向。前进和倒车均受 Cruise Speed、External Speed Limit 及行程边界约束。若要从静止直接试倒车，可用 **Start Prepared Route** 把车放在行程中段再给负输入。
+**Speed** 是沿计划的有符号速度（cm/s）。倒车时 Speed 为负，Distance 递减，车身保持该段的原有朝向。Route 中的 Reverse 定义该段的车头朝向。前进和倒车均受 Cruise Speed、External Speed Limit 及行程边界约束。若要从静止直接试倒车，可用 **Restart Prepared Route At Distance** 把车放在行程中段再给负输入。
 
 停站仍按计划顺序服务。到站时牵引回零；中间站停满后，松闸并给任一方向的牵引即可离开。倒车经过已服务站点不会重复触发到站，退至行程起点可再次前进。行程结束后也可在手动模式下给反向牵引退回。切换驾驶模式保留速度并清零两轴；读档恢复有符号速度，两轴回零。
 

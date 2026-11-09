@@ -155,7 +155,7 @@ bool ARailwayTrain::StartRoute()
     }
     FRailwayPlan Plan;
     FString Error;
-    if (!BuildRoutePlan(Route, Plan, Error) || !StartPreparedRoute(Plan, 0, Error)) return FailRoute(Error);
+    if (!BuildRoutePlan(Route, Plan, Error) || !RestartPreparedRouteAtDistance(Plan, 0, Error)) return FailRoute(Error);
     return true;
 }
 
@@ -192,6 +192,12 @@ bool ARailwayTrain::FindRoutePlanToTrackStation(const FRailwayTrackLocation& Sta
 
 bool ARailwayTrain::StartPreparedRoute(const FRailwayPlan& Plan, double StartDistance, FString& OutError)
 {
+    if (!ActivePlan.Sections.IsEmpty()) return ReplacePreparedRoute(Plan, OutError);
+    return RestartPreparedRouteAtDistance(Plan, StartDistance, OutError);
+}
+
+bool ARailwayTrain::RestartPreparedRouteAtDistance(const FRailwayPlan& Plan, double StartDistance, FString& OutError)
+{
     if (!HasAuthority())
     {
         OutError = TEXT("Starting a route requires authority");
@@ -203,16 +209,16 @@ bool ARailwayTrain::StartPreparedRoute(const FRailwayPlan& Plan, double StartDis
     const int32 StopCursor = Algo::LowerBoundBy(Prepared.Plan.Stops, StartDistance, &FRailwayPlannedStop::Distance);
     const bool bAlreadyAtDestination = Prepared.SectionEnds.Last() == 0.0 && Prepared.Plan.Stops.IsEmpty();
     ResetMotion();
-    ActivatePlan(MoveTemp(Prepared), StartDistance, StopCursor,
+    ActivatePlan(MoveTemp(Prepared), StopCursor,
         bAlreadyAtDestination ? ERailwayState::Finished : ERailwayState::Running);
     return true;
 }
 
-void ARailwayTrain::ActivatePlan(FRailwayPreparedPlan&& Prepared, double StartDistance, int32 StopCursor, ERailwayState NewState)
+void ARailwayTrain::ActivatePlan(FRailwayPreparedPlan&& Prepared, int32 StopCursor, ERailwayState NewState)
 {
     InstallPlan(MoveTemp(Prepared.Plan));
     SectionEnds = MoveTemp(Prepared.SectionEnds);
-    Distance = StartDistance;
+    Distance = Prepared.StartDistance;
     Leg = Prepared.StartSection;
     NextStop = StopCursor;
     CurrentStation = GetStationForState(NewState);
@@ -245,30 +251,10 @@ bool ARailwayTrain::GoDirectToStop(int32 DestinationStopIndex, FString& OutError
     }
     FRailwayPlan Direct;
     MakeDirectPlan(ActivePlan, DestinationStopIndex, Direct);
-    return ApplyReplacementPlan(MoveTemp(Direct), Distance, OutError);
-}
-
-bool ARailwayTrain::ApplyReplacementPlan(FRailwayPlan&& NewPlan, double StartDistance, FString& OutError)
-{
-    const bool bDwelling = State == ERailwayState::Dwelling;
-    if (bDwelling)
-    {
-        // 编入当前停站并将游标越过它。倒计时、预离站标记和驾驶输入延续。
-        FRailwayPlannedStop CurrentStop = ActivePlan.Stops[NextStop - 1];
-        CurrentStop.Distance = StartDistance;
-        NewPlan.Stops.Insert(CurrentStop, 0);
-    }
+    // 裁剪停站表不会改变几何；这里的累计里程仍属于同一组区间。
     FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetWorld(), MoveTemp(NewPlan), StartDistance, Prepared, OutError)) return false;
-    if (!bDwelling)
-    {
-        Wait = 0;
-        bPreLeaveSent = false;
-        // 改线把当前位置设为新计划起点时，车后已没有可行驶区间。
-        if (StartDistance == 0 && Speed < 0) Speed = 0.f;
-    }
-    ActivatePlan(MoveTemp(Prepared), StartDistance, bDwelling ? 1 : 0, State);
-    return true;
+    if (!Railway::Routing::Prepare(GetWorld(), MoveTemp(Direct), Distance, Prepared, OutError)) return false;
+    return ContinuePreparedPlan(MoveTemp(Prepared), false, OutError);
 }
 
 bool ARailwayTrain::ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FString& OutError)
@@ -295,19 +281,10 @@ bool ARailwayTrain::ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FSt
     FRailwayPlan RemainingPlan;
     if (!Railway::Routing::Build(GetWorld(), NewLegs, TOptional<double>(Local), RemainingPlan, OutError)) return false;
 
-    // Do not serve the same marker twice when rerouting at a platform. Consume at most one
-    // matching new stop per served occurrence so co-located stops still work.
-    for (int32 I = NextStop - 1; I >= 0 && FMath::IsNearlyEqual(ActivePlan.Stops[I].Distance, Distance, .001); --I)
-    {
-        const FRailwayStationRef& Served = ActivePlan.Stops[I].Reference;
-        const int32 Match = RemainingPlan.Stops.IndexOfByPredicate([&](const FRailwayPlannedStop& S)
-        {
-            return S.Distance <= .001 && Railway::Stations::SameSource(S.Reference, Served);
-        });
-        if (Match != INDEX_NONE) RemainingPlan.Stops.RemoveAt(Match);
-    }
-
-    if (!ApplyReplacementPlan(MoveTemp(RemainingPlan), 0, OutError)) return false;
+    // Build 已将占用点裁为剩余行程的起点，含恰好在岔口换轨的情况。
+    FRailwayPreparedPlan Prepared;
+    if (!Railway::Routing::Prepare(GetWorld(), MoveTemp(RemainingPlan), 0, Prepared, OutError) ||
+        !ContinuePreparedPlan(MoveTemp(Prepared), true, OutError)) return false;
     Route = NewLegs;
     return true;
 }

@@ -6,6 +6,23 @@
 #include "RailwayTrack.h"
 #include "RailwayDistanceVersion.h"
 
+bool FRailwayPreparedPlan::SetStartDistance(double Distance, FString& Error)
+{
+    if (Plan.bFinishAtLastStop && (Plan.Stops.IsEmpty() || Distance > Plan.Stops.Last().Distance))
+    {
+        Error = TEXT("Direct service requires a destination at or ahead of the start");
+        return false;
+    }
+    double Local;
+    if (!Railway::Geometry::SampleIndexedPlan(Plan, SectionEnds, Distance, StartSection, Local, StartPose))
+    {
+        Error = TEXT("Cannot sample the requested distance in the new plan");
+        return false;
+    }
+    StartDistance = Distance;
+    return true;
+}
+
 namespace Railway::Routing
 {
 namespace
@@ -454,20 +471,11 @@ bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPre
         }
     }
     SortStops(Plan.Stops);
-    if (Plan.bFinishAtLastStop && (Plan.Stops.IsEmpty() || StartDistance > Plan.Stops.Last().Distance))
-    {
-        OutError = TEXT("Direct service requires a destination at or ahead of the start");
-        return false;
-    }
-
-    double TrackDistance;
-    if (!Geometry::SampleIndexedPlan(Plan, Ends, StartDistance, OutPrepared.StartSection, TrackDistance, OutPrepared.StartPose))
-    {
-        OutError = TEXT("Cannot sample the start of the prepared route");
-        return false;
-    }
-    OutPrepared.Plan = MoveTemp(Plan);
-    OutPrepared.SectionEnds = MoveTemp(Ends);
+    FRailwayPreparedPlan Prepared;
+    Prepared.Plan = MoveTemp(Plan);
+    Prepared.SectionEnds = MoveTemp(Ends);
+    if (!Prepared.SetStartDistance(StartDistance, OutError)) return false;
+    OutPrepared = MoveTemp(Prepared);
     return true;
 }
 }
