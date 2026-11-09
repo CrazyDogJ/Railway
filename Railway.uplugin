@@ -1,0 +1,1 @@
+{"FileVersion":3,"Version":2,"VersionName":"0.2.0","FriendlyName":"Railway","Description":"Editable spline rail networks, train routes and station stops.","Category":"Gameplay","CanContainContent":true,"Modules":[{"Name":"Railway","Type":"Runtime","LoadingPhase":"Default"}]}
