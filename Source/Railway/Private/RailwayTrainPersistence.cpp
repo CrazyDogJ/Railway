@@ -2,9 +2,14 @@
 
 #include "Railway.h"
 #include "RailwayRoutePlanner.h"
+#include "RailwayWorldIndex.h"
+#include "RailwayTrack.h"
+#include "UObject/Class.h"
 
 namespace
 {
+constexpr int32 RailwaySaveVersion = 1;
+
 // NextStop 同时编码已服务站次和正在停靠的站次。相同里程的站不能仅按距离推导。
 bool IsValidProgress(const FRailwayTrainSaveGame& Saved, const FRailwayPreparedPlan& Prepared)
 {
@@ -33,9 +38,18 @@ FRailwayTrainSaveGame ARailwayTrain::GetSaveGameData() const
     if (!HasAuthority()) return Saved;
 
     Saved.bValid = true;
+    Saved.FormatVersion = RailwaySaveVersion;
     Saved.DriveMode = DriveMode;
     Saved.RailwayPlan = ActivePlan;
     Saved.RailwayPlan.NetworkRevision = 0;
+    // 磁盘存档不能依靠 Actor 路径。世界站点的描述和 CustomData 只在源对象上持久化。
+    for (FRailwaySection& Section : Saved.RailwayPlan.Sections)
+        Section.Leg.Track = nullptr;
+    for (FRailwayPlannedStop& Stop : Saved.RailwayPlan.Stops)
+    {
+        Stop.Reference.SourceActor = nullptr;
+        if (Stop.Reference.Source != ERailwayStationSource::Inline) Stop.Station = FRailwayStation();
+    }
     Saved.Distance = Distance;
     Saved.State = State;
     Saved.NextStop = NextStop;
@@ -43,6 +57,7 @@ FRailwayTrainSaveGame ARailwayTrain::GetSaveGameData() const
     if (State == ERailwayState::Dwelling)
     {
         Saved.Wait = Wait;
+        Saved.ElapsedDwell = ElapsedDwell;
         Saved.bPreLeaveSent = bPreLeaveSent;
     }
     return Saved;
@@ -50,35 +65,78 @@ FRailwayTrainSaveGame ARailwayTrain::GetSaveGameData() const
 
 void ARailwayTrain::LoadSaveGameData(FRailwayTrainSaveGame InSaveGame)
 {
-    if (!HasAuthority() || !InSaveGame.bValid) return;
-    if (InSaveGame.RailwayPlan.Sections.IsEmpty() &&
-        (InSaveGame.State == ERailwayState::Idle || InSaveGame.State == ERailwayState::InvalidRoute))
+    FString Error;
+    if (!TryLoadSaveGameData(InSaveGame, Error))
+        UE_LOG(LogRailway, Warning, TEXT("%s: could not restore train: %s"), *GetName(), *Error);
+}
+
+bool ARailwayTrain::TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FString& OutError)
+{
+    OutError.Reset();
+    if (!HasAuthority() || !Save.bValid)
     {
-        DriveMode = InSaveGame.DriveMode;
-        ResetPlan(InSaveGame.State);
-        return;
+        OutError = TEXT("A valid save and an authoritative train are required");
+        return false;
+    }
+    if (Save.FormatVersion < 0 || Save.FormatVersion > RailwaySaveVersion)
+    {
+        OutError = FString::Printf(TEXT("Unsupported railway save version %d"), Save.FormatVersion);
+        return false;
+    }
+    if (!StaticEnum<ERailwayState>()->IsValidEnumValue(static_cast<int64>(Save.State)) ||
+        (Save.DriveMode != ERailwayDriveMode::Automatic && Save.DriveMode != ERailwayDriveMode::Manual))
+    {
+        OutError = TEXT("Unrecognized saved train state or drive mode");
+        return false;
+    }
+    if (Save.RailwayPlan.Sections.IsEmpty() && Save.RailwayPlan.Stops.IsEmpty() &&
+        (Save.State == ERailwayState::Idle || Save.State == ERailwayState::InvalidRoute))
+    {
+        DriveMode = Save.DriveMode;
+        ResetPlan(Save.State);
+        return true;
     }
 
-    FString Error;
+    const bool bLegacy = Save.FormatVersion == 0;
+    const auto Origin = bLegacy ? Railway::Routing::EPlanOrigin::LegacySave : Railway::Routing::EPlanOrigin::IdentifiedSave;
     FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetWorld(), MoveTemp(InSaveGame.RailwayPlan), InSaveGame.Distance, Prepared, Error))
+    if (!Railway::Routing::Prepare(GetWorld(), Save.RailwayPlan, Save.Distance, Prepared, OutError, Origin)) return false;
+    if (!IsValidProgress(Save, Prepared))
     {
-        UE_LOG(LogRailway, Warning, TEXT("%s: could not restore train: %s"), *GetName(), *Error);
-        return;
+        OutError = TEXT("Invalid train progress in save");
+        return false;
     }
-    if (!IsValidProgress(InSaveGame, Prepared))
+
+    double Elapsed = 0;
+    double Remaining = 0;
+    if (Save.State == ERailwayState::Dwelling)
     {
-        UE_LOG(LogRailway, Warning, TEXT("%s: could not restore train: invalid train progress in save"), *GetName());
-        return;
+        const int32 Occupied = Save.NextStop - 1;
+        if (bLegacy)
+        {
+            // 旧格式只保存剩余时间，先用旧站时长反推已经消耗的部分。
+            Elapsed = FMath::Max(0.0, Save.RailwayPlan.Stops[Occupied].Station.DwellSeconds - Save.Wait);
+        }
+        else Elapsed = Save.ElapsedDwell;
+        FRailwayStation Station;
+        if (!FMath::IsFinite(Elapsed) || Elapsed < 0 ||
+            !Railway::Stations::Read(GetWorld(), Prepared.Plan.Stops[Occupied], Station))
+        {
+            OutError = TEXT("Invalid occupied station or elapsed dwell time");
+            return false;
+        }
+        Remaining = FMath::Max(0.0, Station.DwellSeconds - Elapsed);
     }
 
     ResetMotion();
-    DriveMode = InSaveGame.DriveMode;
-    if (InSaveGame.State == ERailwayState::Running) Speed = InSaveGame.Speed;
-    if (InSaveGame.State == ERailwayState::Dwelling)
+    DriveMode = Save.DriveMode;
+    if (Save.State == ERailwayState::Running) Speed = Save.Speed;
+    if (Save.State == ERailwayState::Dwelling)
     {
-        Wait = InSaveGame.Wait;
-        bPreLeaveSent = InSaveGame.bPreLeaveSent;
+        ElapsedDwell = Elapsed;
+        Wait = Remaining;
+        bPreLeaveSent = Save.bPreLeaveSent;
     }
-    ActivatePlan(MoveTemp(Prepared), InSaveGame.Distance, InSaveGame.NextStop, InSaveGame.State);
+    ActivatePlan(MoveTemp(Prepared), Save.Distance, Save.NextStop, Save.State);
+    return true;
 }

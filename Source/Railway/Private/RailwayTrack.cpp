@@ -134,7 +134,7 @@ ARailwayStationMarker::ARailwayStationMarker()
 
 FRailwayStation ARailwayStationMarker::GetStationDefinition() const
 {
-    return FRailwayStation{StationName, TrackPosition, DwellSeconds};
+    return FRailwayStation{StationName, TrackPosition, DwellSeconds, CustomData, RailwayId};
 }
 
 void ARailwayStationMarker::OnConstruction(const FTransform& Transform)

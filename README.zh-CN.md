@@ -32,7 +32,7 @@
 ## 蓝图扩展接口
 
 - **Start Route** 继续按 Route 从起点发车，并对齐有宿主的支线端点。**Build Route Plan** 只读取当前轨道几何和已加载站点，将传入的 Legs 转为 Sections 与 Stops。调用失败时读取 Out Error。运行或预览前需先完成岔口吸附。
-- **Start Prepared Route** 从 Start Distance（整条行程的累计厘米数）静止发车；起点之前的停站跳过，恰好位于起点的停站仍会触发。自建计划需自行选择合法岔口和停站；此节点检查区间、站距和段间空间连续性。失败的计划不会覆盖正在运行的行程。Plan 使用场景 Actor 引用，持久化时由游戏提供跨加载的标识。
+- **Start Prepared Route** 从 Start Distance（整条行程的累计厘米数）静止发车；起点之前的停站跳过，恰好位于起点的停站仍会触发。自建计划需自行选择合法岔口和停站；此节点检查区间、站距和段间空间连续性。失败的计划不会覆盖正在运行的行程。编制好的计划带有轨道 ID 和线路签名；自建临时站可将 Reference 的 Source 显式设为 Inline，并填写 Station。
 - **Sample Plan** 可在发车前采样已生成的计划。**Sample Route** 采样运行中的计划，返回段序号、从 Spline 首点起算的局部厘米数、车体世界姿态；布尔值表示是否有效。Section 中的 Entry Distance 是本轨道里程，Travel Distance 是沿指定方向的正长度，计划停站 Distance 是行程累计里程。编辑器预览可在列车蓝图中覆写 **Get Preview Location**，输出带方向的轨道和局部里程。该函数在编辑器会频繁调用，适合使用缓存。
 - 蓝图可读取 Active Plan、Distance、Leg、Next Stop（从零起算）、Wait（秒）、Has Sent Pre Leave 和 Get Route Length。运动参数支持运行时修改；**External Speed Limit** 为独立限速输入（cm/s，负值解除），通过现有加减速模型生效。到站、预离站和离站委托沿用原接口。
 - 锚点蓝图可调用 **Set Track Anchor** 指定 Host Track 与 0–1 的弧长比例，传空轨道解除附着。**Project To Host** 从当前位置更新比例，**Refresh Anchor** 把该比例应用到 Actor。
@@ -41,7 +41,15 @@
 
 服务端驱动 Step。ActivePlan 变化时复制线路；TrainMoveState 的 RepNotify 将带服务器时间的累计里程样本送入客户端缓冲区。客户端按计划版本配对、在两份样本之间沿轨道插值。Snapshot Rate Hz 默认 15，Interpolation Delay 默认 0.15 秒（列车蓝图的 Railway → Networking）。客户端中 Distance、Leg 和 Speed 对应当前显示位置，权威到站和离站事件仍由服务端驱动。远端需要已加载、可解析且几何一致的轨道。读档和重开发车使用新版本号，等待新计划和样本就绪后直接定位。
 
-Get Save Game Data 保存实际执行的计划及累计里程、运行状态和停站游标。行驶时保存速度，停站时保存剩余时间和预离站通知是否已发。Leg 和 Current Station 在加载时推导；同里程多个停站仍通过 NextStop 区分。旧的按属性名序列化的存档缺少预离站标记，若在提示之后存档，恢复时可能再次提示。自定义计划中的 Track 引用必须能在加载时解析到原关卡中的轨道。
+**Get Save Game Data** 保存轨道与站点身份、行程区间、停站游标和运行进度。返回的存档计划已清空场景 Actor 引用；载入时按 GUID 重新绑定。需要在游戏中直接采样时使用列车的 Active Plan。**Try Load Save Game Data** 返回成功标记和 Out Error，可在关卡流加载完成后重试。原有 **Load Save Game Data** 入口将失败原因写入 LogRailway。读档检查全部通过后才切换当前行程。
+
+### 站点数据与版本升级
+
+- **蓝图读取**。将 Build Route Plan 或 Active Plan 的一个 Stops 元素传给列车的 **Resolve Planned Stop**；成功后读取返回值中的 Name、Dwell Seconds 和 Custom Data。已有 UI 若直接拆分 `Stops[i].Station`，需要改接该节点。`Get Next Stop Info` 已走相同的实时查询。仅手工编制的 Inline 站点直接使用 Station 字段。
+- **站点编辑**。场景站点由 Railway ID 定位，Legacy Stations 的行由所属轨道 ID 与 Station ID 共同定位。站次保留编制时的位置。改名、调整停靠时长或替换 Custom Data 后，后续查询读取当前定义；正在停靠和读档恢复时，剩余秒数等于当前时长减去已停秒数，最低为零。新增站点在重新编制停站表后加入。
+- **线路编辑**。加载新格式存档时，检查引用到的轨道、岔口连接、曲线签名和站点位置。对象未加载、身份重复或站点已移走等情况会拒绝恢复并保留现有列车。运行中遇到失效的当前轨道、待停站或占用站时，服务端进入 InvalidRoute。修改线路后可以用 Start Route 重新编制。
+- **旧地图与旧档**。首次升级时，在调整 Legacy Stations 数组前保存相关关卡和外部 Actor 包，以固化升级得到的 ID。没有 ID 的旧存档需要原有轨道引用仍可解析，并按当前区间、站次里程和弧长比例唯一匹配。无法辨别的同位置多站、无来源的旧自定义停站或不兼容的区间会返回失败。旧档没有历史几何签名，也无法识别删除后在相同位置重建的唯一站点。手工维护的旧计划可显式指定 Inline 或重新编制。
+- **运行时生成与网络**。程序生成的轨道、岔口和站点需在恢复存档前重建，并恢复相同的 Railway ID；内嵌行也需恢复其 Station ID。同一世界中同时加载的场景实例须使用唯一身份。站点名称、时间和 Custom Data 随源 Actor 复制，客户端查询受对象加载和网络相关性影响。自定义结构的数据成员需支持项目使用的网络序列化。
 
 ## 玩家驾驶、改线与直达
 

@@ -114,6 +114,14 @@ public:
     UFUNCTION(BlueprintPure, Category="Railway")
     void GetNextStopInfo(double& OutDistanceRemain, FRailwayStation& OutStationInfo) const;
 
+    /** 从当前世界读取站次的站名、时长和 CustomData。来源无效或位置已变时返回 false。 */
+    UFUNCTION(BlueprintPure, Category="Railway|Route")
+    bool ResolvePlannedStop(const FRailwayPlannedStop& Stop, FRailwayStation& OutStation) const;
+
+    /** 提供失败原因，读档失败时保留现有行程。 */
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Save Game")
+    bool TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FString& OutError);
+
     // Builds a snapshot of the current geometry without resetting this train.
     UFUNCTION(BlueprintCallable, Category="Railway|Route")
     bool BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan& OutPlan, FString& OutError) const;
@@ -202,6 +210,8 @@ private:
 
     bool IsInService() const;
     FName GetStationForState(ERailwayState InState) const;
+    bool RefreshDwell();
+    double ElapsedDwell = 0;
     void ResetMotion();
     void ResetPlan(ERailwayState NewState);
     void InstallPlan(FRailwayPlan&& Plan);

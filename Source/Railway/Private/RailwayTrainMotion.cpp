@@ -1,5 +1,8 @@
 #include "RailwayTrain.h"
 
+#include "RailwayWorldIndex.h"
+#include "RailwayTrack.h"
+
 void ARailwayTrain::ServerSetDriveMode_Implementation(ERailwayDriveMode NewMode)
 {
     if (NewMode != ERailwayDriveMode::Manual && NewMode != ERailwayDriveMode::Automatic) return;
@@ -26,9 +29,26 @@ double ARailwayTrain::CalculateDriverTargetSpeed(double SpeedLimit, double Delta
     return Speed + (SpeedLimit - Speed) * Response;
 }
 
+bool ARailwayTrain::RefreshDwell()
+{
+    if (!ActivePlan.Sections.IsValidIndex(Leg)) return FailRoute(TEXT("Missing occupied section"));
+    const FRailwaySection& Section = ActivePlan.Sections[Leg];
+    if (!IsValid(Section.Leg.Track) || Section.Leg.Track->RailwayId != Section.TrackId ||
+        Section.Leg.Track->GetLayoutSignature() != Section.LayoutSignature)
+        return FailRoute(TEXT("Occupied track or its layout changed during dwell"));
+    FRailwayStation Station;
+    if (!ActivePlan.Stops.IsValidIndex(NextStop - 1) ||
+        !Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop - 1], Station))
+        return FailRoute(TEXT("Occupied station was removed, moved or became invalid"));
+    CurrentStation = Station.Name;
+    Wait = FMath::Max(0.0, Station.DwellSeconds - ElapsedDwell);
+    return true;
+}
+
 bool ARailwayTrain::AdvanceDwell(double& DeltaSeconds)
 {
     const double Consumed = FMath::Min(Wait, DeltaSeconds);
+    ElapsedDwell += Consumed;
     Wait -= Consumed;
     DeltaSeconds -= Consumed;
 
@@ -53,7 +73,11 @@ bool ARailwayTrain::AdvanceDwell(double& DeltaSeconds)
 
     // 手动驾驶需给正牵引才从中间站发车。几何终点无需再次给牵引。
     const bool bAtTrackEnd = NextStop == ActivePlan.Stops.Num() && Distance == GetRouteLength();
-    if (!bAtTrackEnd && DriveMode == ERailwayDriveMode::Manual && DriveInput <= 0.f) return false;
+    if (!bAtTrackEnd && DriveMode == ERailwayDriveMode::Manual && DriveInput <= 0.f)
+    {
+        ElapsedDwell += DeltaSeconds;
+        return false;
+    }
 
     OnStationLeave.Broadcast(CurrentStation);
     if (ActivePlan.NetworkRevision != Revision) return false;
@@ -69,7 +93,14 @@ void ARailwayTrain::ArriveAtTarget(uint32 ExpectedRevision)
         SetState(ERailwayState::Finished);
         return;
     }
-    const FRailwayStation& Station = ActivePlan.Stops[NextStop++].Station;
+    FRailwayStation Station;
+    if (!Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop], Station))
+    {
+        FailRoute(TEXT("Cannot arrive at a removed, moved or invalid station"));
+        return;
+    }
+    ++NextStop;
+    ElapsedDwell = 0;
     DriveInput = 0.f;
     Wait = Station.DwellSeconds;
     bPreLeaveSent = false;

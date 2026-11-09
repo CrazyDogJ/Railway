@@ -40,6 +40,9 @@ static bool LocateInSection(const FRailwayPlan& Plan, int32 Index, double Along,
 {
     const FRailwaySection& Section = Plan.Sections[Index];
     if (!IsValid(Section.Leg.Track) || !IsValid(Section.Leg.Track->Spline)) return false;
+    if (Section.TrackId.IsValid() && Section.Leg.Track->RailwayId != Section.TrackId) return false;
+    if (Section.LayoutSignature.IsValid() && Section.Leg.Track->HasAuthority() &&
+        Section.Leg.Track->GetLayoutSignature() != Section.LayoutSignature) return false;
     const double Local = Section.EntryDistance + (Section.Leg.bReverse ? -Along : Along);
     TrackDistance = NormalizeDistance(*Section.Leg.Track->Spline, Local);
     SectionIndex = Index;

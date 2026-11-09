@@ -1,7 +1,7 @@
 #include "RailwayRoutePlanner.h"
 
 #include "Components/SplineComponent.h"
-#include "EngineUtils.h"
+#include "RailwayWorldIndex.h"
 #include "RailwayRouteGeometry.h"
 #include "RailwayTrack.h"
 
@@ -17,7 +17,7 @@ struct FTrackInterval
 };
 
 constexpr double JunctionToleranceCm = 1.0;
-using FStationMap = TMultiMap<ARailwayTrack*, FRailwayStation>;
+
 
 const TCHAR* CheckTrack(const ARailwayTrack* Track, const UWorld* World)
 {
@@ -82,19 +82,24 @@ const TCHAR* Connect(const FRailwayLeg& From, const FRailwayLeg& To, double& Exi
     return nullptr;
 }
 
-FStationMap CollectStations(UWorld* World)
+const TCHAR* CheckIdentities(const FRailwayWorldIndex& WorldIndex, const ARailwayTrack& Track)
 {
-    FStationMap Markers;
-    for (TActorIterator<ARailwayStationMarker> It(World); It; ++It)
+    if (WorldIndex.Find(Track.RailwayId) != &Track) return TEXT("Missing or ambiguous track ID");
+    if (!Track.Spline->IsClosedLoop())
     {
-        if (IsValid(It->HostTrack))
-            Markers.Add(It->HostTrack, It->GetStationDefinition());
+        for (const ARailwayJunction* Joint : {Track.StartJunction.Get(), Track.EndJunction.Get()})
+        {
+            if (!IsValid(Joint)) continue;
+            if (WorldIndex.Find(Joint->RailwayId) != Joint) return TEXT("Missing or ambiguous junction ID");
+            if (IsValid(Joint->HostTrack) && WorldIndex.Find(Joint->HostTrack->RailwayId) != Joint->HostTrack.Get())
+                return TEXT("Missing or ambiguous junction host ID");
+        }
     }
-    return Markers;
+    return nullptr;
 }
 
 // 同一套投影用于旧关卡内嵌站点和场景站点。整圈接缝上的站只在返回时停靠。
-bool AppendStop(const FRailwayStation& Station, const FRailwaySection& Section, double Length, double Base,
+bool AppendStop(const FRailwayStation& Station, const FRailwayStationRef& Ref, const FRailwaySection& Section, double Length, double Base,
     TArray<FRailwayPlannedStop>& Stops)
 {
     if (!FMath::IsFinite(Station.Position) || Station.Position < 0 || Station.Position > 1 ||
@@ -109,8 +114,53 @@ bool AppendStop(const FRailwayStation& Station, const FRailwaySection& Section, 
         if (Along == 0.0 && Section.TravelDistance == Length) Along = Length;
     }
     if (Along >= 0 && Along <= Section.TravelDistance)
-        Stops.Add(FRailwayPlannedStop{Base + Along, Station});
+    {
+        FRailwayPlannedStop& Stop = Stops.AddDefaulted_GetRef();
+        Stop.Distance = Base + Along;
+        Stop.Reference = Ref;
+    }
     return true;
+}
+
+bool ResolveIntervals(const UWorld* World, const FRailwayWorldIndex& WorldIndex, const TArray<FRailwayLeg>& Legs,
+    TArray<FTrackInterval>& Intervals, FString& OutError)
+{
+    Intervals.Reserve(Legs.Num());
+    for (int32 Index = 0; Index < Legs.Num(); ++Index)
+    {
+        const FRailwayLeg& Leg = Legs[Index];
+        if (const TCHAR* Error = CheckTrack(Leg.Track, World)) return RejectLeg(Index, Error, OutError);
+        if (const TCHAR* Error = CheckIdentities(WorldIndex, *Leg.Track)) return RejectLeg(Index, Error, OutError);
+        const double Length = Leg.Track->Spline->GetSplineLength();
+        Intervals.Add(FTrackInterval{Leg.bReverse ? Length : 0, Leg.bReverse ? 0 : Length});
+    }
+    for (int32 Index = 1; Index < Legs.Num(); ++Index)
+    {
+        if (const TCHAR* Error = Connect(Legs[Index - 1], Legs[Index], Intervals[Index - 1].Exit, Intervals[Index].Entry))
+            return RejectLeg(Index, Error, OutError);
+    }
+    return true;
+}
+
+double DirectedTravel(const FRailwayLeg& Leg, const FTrackInterval& Interval)
+{
+    const double Travel = Leg.bReverse ? Interval.Entry - Interval.Exit : Interval.Exit - Interval.Entry;
+    if (!Leg.Track->Spline->IsClosedLoop()) return Travel;
+    const double Length = Leg.Track->Spline->GetSplineLength();
+    const double Wrapped = Geometry::WrapDistance(Travel, Length);
+    return Wrapped == 0.0 ? Length : Wrapped;
+}
+
+bool CollectSectionStops(const FRailwayWorldIndex& WorldIndex, const FRailwaySection& Section, double Base,
+    TArray<FRailwayPlannedStop>& Stops, FString& Error)
+{
+    const double Length = Section.Leg.Track->Spline->GetSplineLength();
+    return WorldIndex.VisitStations(*Section.Leg.Track, [&](const FRailwayStation& Station, const FRailwayStationRef& Ref)
+    {
+        if (AppendStop(Station, Ref, Section, Length, Base, Stops)) return true;
+        Error = TEXT("Invalid station position or dwell time");
+        return false;
+    }, Error);
 }
 
 void SortStops(FRailwayPlan& Plan)
@@ -151,23 +201,11 @@ bool Build(UWorld* World, const TArray<FRailwayLeg>& Legs, TOptional<double> Fir
     OutError.Reset();
     if (Legs.IsEmpty() || !World) return RejectLeg(0, TEXT("Empty route or no world"), OutError);
 
+    const FRailwayWorldIndex WorldIndex(World);
     TArray<FTrackInterval> Intervals;
-    Intervals.Reserve(Legs.Num());
-    for (int32 Index = 0; Index < Legs.Num(); ++Index)
-    {
-        const FRailwayLeg& Leg = Legs[Index];
-        if (const TCHAR* Error = CheckTrack(Leg.Track, World)) return RejectLeg(Index, Error, OutError);
-        const double Length = Leg.Track->Spline->GetSplineLength();
-        Intervals.Add(FTrackInterval{Leg.bReverse ? Length : 0, Leg.bReverse ? 0 : Length});
-    }
-    for (int32 Index = 1; Index < Legs.Num(); ++Index)
-    {
-        if (const TCHAR* Error = Connect(Legs[Index - 1], Legs[Index], Intervals[Index - 1].Exit, Intervals[Index].Entry))
-            return RejectLeg(Index, Error, OutError);
-    }
+    if (!ResolveIntervals(World, WorldIndex, Legs, Intervals, OutError)) return false;
     if (FirstEntry.IsSet()) Intervals[0].Entry = FirstEntry.GetValue();
 
-    const FStationMap Markers = CollectStations(World);
     FRailwayPlan Plan;
     Plan.Sections.Reserve(Legs.Num());
     double Base = 0;
@@ -177,31 +215,24 @@ bool Build(UWorld* World, const TArray<FRailwayLeg>& Legs, TOptional<double> Fir
         const FTrackInterval& Interval = Intervals[Index];
         const double Length = Leg.Track->Spline->GetSplineLength();
         const bool bLoop = Leg.Track->Spline->IsClosedLoop();
-        double Travel = Leg.bReverse ? Interval.Entry - Interval.Exit : Interval.Exit - Interval.Entry;
+        const double Span = Interval.Exit - Interval.Entry;
 
         // 在岔口改线时，第一段可能已经走完。环线里程 0 和 Length 表示同一点。
         if (FirstEntry.IsSet() && Index == 0 && Legs.Num() > 1 && Legs[1].Track != Leg.Track &&
-            (FMath::Abs(Travel) <= UE_SMALL_NUMBER || (bLoop && FMath::IsNearlyEqual(FMath::Abs(Travel), Length, UE_SMALL_NUMBER))))
+            (FMath::Abs(Span) <= UE_SMALL_NUMBER || (bLoop && FMath::IsNearlyEqual(FMath::Abs(Span), Length, UE_SMALL_NUMBER))))
             continue;
 
-        if (bLoop)
-        {
-            Travel = Geometry::WrapDistance(Travel, Length);
-            if (Travel == 0.0) Travel = Length;
-        }
+        const double Travel = DirectedTravel(Leg, Interval);
         if (!FMath::IsFinite(Travel) || Travel <= UE_SMALL_NUMBER)
             return RejectLeg(Index, TEXT("Check junction order and Reverse flag on this leg"), OutError);
 
-        const FRailwaySection& Section = Plan.Sections.Add_GetRef(FRailwaySection{Leg, Interval.Entry, Travel});
-        for (const FRailwayStation& Station : Leg.Track->Stations)
+        FRailwaySection& Section = Plan.Sections.Add_GetRef(FRailwaySection{Leg, Interval.Entry, Travel});
+        Section.TrackId = Leg.Track->RailwayId;
+        Section.LayoutSignature = Leg.Track->GetLayoutSignature();
+        if (!CollectSectionStops(WorldIndex, Section, Base, Plan.Stops, OutError))
         {
-            if (!AppendStop(Station, Section, Length, Base, Plan.Stops))
-                return RejectLeg(Index, TEXT("Invalid station position or dwell time"), OutError);
-        }
-        for (auto It = Markers.CreateConstKeyIterator(Leg.Track.Get()); It; ++It)
-        {
-            if (!AppendStop(It.Value(), Section, Length, Base, Plan.Stops))
-                return RejectLeg(Index, TEXT("Invalid station position or dwell time"), OutError);
+            OutError = FString::Printf(TEXT("route[%d]: %s"), Index, *OutError);
+            return false;
         }
         Base += Travel;
     }
@@ -211,15 +242,87 @@ bool Build(UWorld* World, const TArray<FRailwayLeg>& Legs, TOptional<double> Fir
     return true;
 }
 
-bool Prepare(const UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPreparedPlan& OutPrepared, FString& OutError)
+// 旧版没有身份和签名。仅用当时经过的区间和站次位置识别候选，遇到歧义保持原列车不动。
+static bool MigrateLegacyStops(UWorld* World, const FRailwayWorldIndex& WorldIndex, FRailwayPlan& Plan, bool bLegacySave, FString& Error)
+{
+    TArray<FRailwayLeg> Legs;
+    for (const FRailwaySection& Section : Plan.Sections) Legs.Add(Section.Leg);
+    TArray<FTrackInterval> Intervals;
+    if (!ResolveIntervals(World, WorldIndex, Legs, Intervals, Error)) return false;
+    TArray<FRailwayPlannedStop> Candidates;
+    double Base = 0;
+    for (int32 I = 0; I < Plan.Sections.Num(); ++I)
+    {
+        const FRailwaySection& Section = Plan.Sections[I];
+        // 途中改线允许首段从任意位置开始。其余进出口必须仍与当前岔口和轨道长度吻合。
+        if (I == 0) Intervals[I].Entry = Section.EntryDistance;
+        if (!FMath::IsNearlyEqual(Intervals[I].Entry, Section.EntryDistance, .001) ||
+            !FMath::IsNearlyEqual(DirectedTravel(Section.Leg, Intervals[I]), Section.TravelDistance, .001))
+            return RejectLeg(I, TEXT("Legacy section no longer matches track length or junctions"), Error);
+        if (!CollectSectionStops(WorldIndex, Section, Base, Candidates, Error)) return false;
+        Base += Section.TravelDistance;
+    }
+    for (FRailwayPlannedStop& Stop : Plan.Stops)
+    {
+        if (!bLegacySave && Stop.Reference.Source != ERailwayStationSource::LegacySnapshot) continue;
+        const FRailwayStationRef* Match = nullptr;
+        for (const FRailwayPlannedStop& Candidate : Candidates)
+        {
+            if (!FMath::IsNearlyEqual(Stop.Distance, Candidate.Distance, .001) ||
+                Stop.Station.Position != Candidate.Reference.PlannedPosition) continue;
+            if (Match && !Stations::SameSource(*Match, Candidate.Reference))
+            {
+                Error = FString::Printf(TEXT("Ambiguous legacy stop at %.3f cm"), Stop.Distance);
+                return false;
+            }
+            Match = &Candidate.Reference;
+        }
+        if (!Match)
+        {
+            Error = FString::Printf(TEXT("Legacy stop at %.3f cm has no identifiable source"), Stop.Distance);
+            return false;
+        }
+        Stop.Reference = *Match;
+    }
+    return true;
+}
+
+bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPreparedPlan& OutPrepared,
+    FString& OutError, EPlanOrigin Origin)
 {
     OutError.Reset();
+    const FRailwayWorldIndex WorldIndex(World);
     FVector PreviousExit = FVector::ZeroVector;
     for (int32 Index = 0; Index < Plan.Sections.Num(); ++Index)
     {
-        if (const TCHAR* Error = CheckSection(Plan.Sections[Index], World, Index > 0, PreviousExit))
+        FRailwaySection& Section = Plan.Sections[Index];
+        if (Origin == EPlanOrigin::IdentifiedSave && (!Section.TrackId.IsValid() || !Section.LayoutSignature.IsValid()))
+            return RejectLeg(Index, TEXT("Saved section is missing its track ID or layout signature"), OutError);
+        if (Section.TrackId.IsValid())
+        {
+            Section.Leg.Track = Cast<ARailwayTrack>(WorldIndex.Find(Section.TrackId));
+            if (!Section.Leg.Track)
+            {
+                OutError = FString::Printf(TEXT("route[%d]: track %s is missing, unloaded or ambiguous"), Index, *Section.TrackId.ToString());
+                return false;
+            }
+        }
+        if (const TCHAR* Error = CheckSection(Section, World, Index > 0, PreviousExit))
             return RejectLeg(Index, Error, OutError);
+        ARailwayTrack& Track = *Section.Leg.Track;
+        if (const TCHAR* Error = CheckIdentities(WorldIndex, Track)) return RejectLeg(Index, Error, OutError);
+        const FGuid Signature = Track.GetLayoutSignature();
+        if (Section.LayoutSignature.IsValid() && Section.LayoutSignature != Signature)
+            return RejectLeg(Index, TEXT("Track geometry or junction connections changed since this plan was built"), OutError);
+        Section.TrackId = Track.RailwayId;
+        Section.LayoutSignature = Signature;
     }
+    const bool bNeedsMigration = Origin == EPlanOrigin::LegacySave || Plan.Stops.ContainsByPredicate([](const FRailwayPlannedStop& Stop)
+    {
+        return Stop.Reference.Source == ERailwayStationSource::LegacySnapshot;
+    });
+    if (bNeedsMigration && Origin != EPlanOrigin::IdentifiedSave &&
+        !MigrateLegacyStops(World, WorldIndex, Plan, Origin == EPlanOrigin::LegacySave, OutError)) return false;
 
     TArray<double> Ends;
     Geometry::BuildSectionEnds(Plan, Ends);
@@ -228,13 +331,39 @@ bool Prepare(const UWorld* World, FRailwayPlan Plan, double StartDistance, FRail
         OutError = TEXT("Empty plan or start outside the route");
         return false;
     }
-    for (const FRailwayPlannedStop& Stop : Plan.Stops)
+    for (FRailwayPlannedStop& Stop : Plan.Stops)
     {
-        if (!FMath::IsFinite(Stop.Distance) || Stop.Distance < 0 || Stop.Distance > Ends.Last() ||
-            !FMath::IsFinite(Stop.Station.DwellSeconds) || Stop.Station.DwellSeconds < 0)
+        if (Origin == EPlanOrigin::IdentifiedSave && (Stop.Reference.Source == ERailwayStationSource::Unspecified ||
+            Stop.Reference.Source == ERailwayStationSource::LegacySnapshot))
         {
-            OutError = TEXT("Invalid planned stop distance or dwell time");
+            OutError = TEXT("Saved stop is missing its source");
             return false;
+        }
+        if (!WorldIndex.BindStop(Stop, OutError)) return false;
+        if (!FMath::IsFinite(Stop.Distance) || Stop.Distance < 0 || Stop.Distance > Ends.Last())
+        {
+            OutError = TEXT("Invalid planned stop distance");
+            return false;
+        }
+        if (Stop.Reference.Source != ERailwayStationSource::Inline)
+        {
+            const auto* Host = Cast<ARailwayTrack>(WorldIndex.Find(Stop.Reference.HostTrackId));
+            int32 SectionIndex;
+            double Local;
+            FTransform Pose;
+            if (!Host || !IsValid(Host->Spline) ||
+                !Geometry::SampleIndexedPlan(Plan, Ends, Stop.Distance, SectionIndex, Local, Pose))
+            {
+                OutError = TEXT("Cannot locate planned world station");
+                return false;
+            }
+            const double StationDistance = Geometry::DistanceAtPosition(*Host->Spline, Stop.Reference.PlannedPosition);
+            const FVector StationLocation = Host->Spline->GetLocationAtDistanceAlongSpline(StationDistance, ESplineCoordinateSpace::World);
+            if (FVector::Dist(Pose.GetLocation(), StationLocation) > JunctionToleranceCm)
+            {
+                OutError = FString::Printf(TEXT("Station %s no longer lies at its planned distance"), *Stop.Reference.StationId.ToString());
+                return false;
+            }
         }
     }
     SortStops(Plan);

@@ -19,8 +19,12 @@ void ARailwayTrain::PublishMoveState(bool bForce)
 {
     if (!HasAuthority() || GetNetMode() == NM_Standalone) return;
     const double Now = GetWorld()->GetTimeSeconds();
+    const double DwellEnd = State == ERailwayState::Dwelling ? Now + Wait : 0;
+    const bool bDwellEdited = State == ERailwayState::Dwelling &&
+        (Wait > 0 || TrainMoveState.DwellEndTime > Now) && !FMath::IsNearlyEqual(DwellEnd, TrainMoveState.DwellEndTime, .02);
     const bool bTransition = TrainMoveState.PlanRevision != ActivePlan.NetworkRevision ||
-        TrainMoveState.State != State || TrainMoveState.NextStop != NextStop;
+        TrainMoveState.State != State || TrainMoveState.NextStop != NextStop ||
+        TrainMoveState.StationName != CurrentStation || bDwellEdited;
 
     // 巡航按配置的频率发送；换线和停站游标变化立即发送。
     if (!bForce && !bTransition &&
@@ -33,7 +37,8 @@ void ARailwayTrain::PublishMoveState(bool bForce)
     TrainMoveState.Speed = Speed;
     TrainMoveState.State = State;
     TrainMoveState.NextStop = NextStop;
-    TrainMoveState.DwellEndTime = State == ERailwayState::Dwelling ? Now + Wait : 0;
+    TrainMoveState.DwellEndTime = DwellEnd;
+    TrainMoveState.StationName = CurrentStation;
     if (bForce || bTransition) ForceNetUpdate();
 }
 
@@ -78,7 +83,7 @@ void ARailwayTrain::TickClientPresentation()
     NextStop = Sample.NextStop;
     const bool bDwelling = Sample.State == ERailwayState::Dwelling;
     Wait = bDwelling ? FMath::Max(0.0, Sample.DwellEndTime - FMath::Max(Sample.ServerTime, RequestedTime)) : 0;
-    CurrentStation = GetStationForState(Sample.State);
+    CurrentStation = bDwelling ? Sample.StationName : NAME_None;
     UpdateVelocity();
     SetState(Sample.State);
 }

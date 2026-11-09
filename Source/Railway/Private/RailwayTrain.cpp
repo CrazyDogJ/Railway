@@ -11,6 +11,7 @@
 #include "RailwayRoutePlanner.h"
 #include "RailwayTrack.h"
 #include "RailwayTrackPlacement.h"
+#include "RailwayWorldIndex.h"
 #include "UObject/ConstructorHelpers.h"
 #if WITH_EDITOR
 #include "UObject/Script.h"
@@ -95,8 +96,10 @@ bool ARailwayTrain::IsInService() const
 
 FName ARailwayTrain::GetStationForState(ERailwayState InState) const
 {
-    return InState == ERailwayState::Dwelling && ActivePlan.Stops.IsValidIndex(NextStop - 1)
-        ? ActivePlan.Stops[NextStop - 1].Station.Name : NAME_None;
+    FRailwayStation Current;
+    if (InState == ERailwayState::Dwelling && ActivePlan.Stops.IsValidIndex(NextStop - 1) &&
+        Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop - 1], Current)) return Current.Name;
+    return NAME_None;
 }
 
 void ARailwayTrain::ResetMotion()
@@ -104,6 +107,7 @@ void ARailwayTrain::ResetMotion()
     DriveInput = 0.f;
     Speed = 0.f;
     Wait = 0;
+    ElapsedDwell = 0;
     bPreLeaveSent = false;
 }
 
@@ -258,10 +262,10 @@ bool ARailwayTrain::ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FSt
     // matching new stop per served occurrence so co-located stops still work.
     for (int32 I = NextStop - 1; I >= 0 && FMath::IsNearlyEqual(ActivePlan.Stops[I].Distance, Distance, .001); --I)
     {
-        const FRailwayStation& Served = ActivePlan.Stops[I].Station;
+        const FRailwayStationRef& Served = ActivePlan.Stops[I].Reference;
         const int32 Match = RemainingPlan.Stops.IndexOfByPredicate([&](const FRailwayPlannedStop& S)
         {
-            return S.Distance <= .001 && S.Station.Name == Served.Name && S.Station.Position == Served.Position;
+            return S.Distance <= .001 && Railway::Stations::SameSource(S.Reference, Served);
         });
         if (Match != INDEX_NONE) RemainingPlan.Stops.RemoveAt(Match);
     }
@@ -275,11 +279,23 @@ void ARailwayTrain::GetNextStopInfo(double& OutDistanceRemain, FRailwayStation& 
 {
     OutDistanceRemain = -1;
     OutStationInfo = FRailwayStation();
-    if (ActivePlan.Stops.IsValidIndex(NextStop))
-    {
-        OutStationInfo = ActivePlan.Stops[NextStop].Station;
+    if (ActivePlan.Stops.IsValidIndex(NextStop) && ResolvePlannedStop(ActivePlan.Stops[NextStop], OutStationInfo))
         OutDistanceRemain = ActivePlan.Stops[NextStop].Distance - Distance;
+}
+
+bool ARailwayTrain::ResolvePlannedStop(const FRailwayPlannedStop& Stop, FRailwayStation& OutStation) const
+{
+    if (Railway::Stations::Read(GetWorld(), Stop, OutStation)) return true;
+    // 刚反序列化的引用尚未绑定。只在这种情况下按世界 ID 查找，正常运行直接使用已绑定对象。
+    if (Stop.Reference.Source != ERailwayStationSource::Inline && !IsValid(Stop.Reference.SourceActor))
+    {
+        FRailwayPlannedStop Bound = Stop;
+        FString Error;
+        const FRailwayWorldIndex WorldIndex(GetWorld());
+        if (WorldIndex.BindStop(Bound, Error) && Railway::Stations::Read(GetWorld(), Bound, OutStation)) return true;
     }
+    OutStation = FRailwayStation();
+    return false;
 }
 
 bool ARailwayTrain::SamplePlan(const FRailwayPlan& Plan, double RouteDistance, int32& SectionIndex, double& TrackDistance, FTransform& Pose)
@@ -297,7 +313,7 @@ bool ARailwayTrain::UpdatePose()
     FTransform Pose;
     double TrackDistance;
     if (!SampleRoute(Distance, Leg, TrackDistance, Pose))
-        return FailRoute(FString::Printf(TEXT("Cannot sample active route at %.2f cm"), Distance));
+        return FailRoute(FString::Printf(TEXT("Cannot sample active route at %.2f cm: check track identity, geometry and connections"), Distance));
     Railway::Placement::ApplyPose(*this, Pose);
     UpdateVelocity();
     return true;
@@ -315,6 +331,17 @@ void ARailwayTrain::Tick(float DeltaSeconds)
 #endif
     if (HasAuthority())
     {
+        if (State == ERailwayState::Dwelling && !RefreshDwell()) return;
+        if (State == ERailwayState::Running && ActivePlan.Stops.IsValidIndex(NextStop))
+        {
+            FRailwayStation Upcoming;
+            if (!Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop], Upcoming))
+            {
+                FailRoute(FString::Printf(TEXT("Upcoming station %s was removed, moved or became invalid"),
+                    *ActivePlan.Stops[NextStop].Reference.StationId.ToString()));
+                return;
+            }
+        }
         // 权威模拟以至多 1/60 秒的子步推进，避免低帧率时越过站点。
         double Left = DeltaSeconds;
         while (Left > 0 && IsInService())
