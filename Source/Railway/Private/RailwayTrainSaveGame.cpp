@@ -7,6 +7,7 @@ FRailwayTrainSaveGame FRailwayTrainSaveGame::SaveTrain(const ARailwayTrain* Trai
     FRailwayTrainSaveGame Out;
     if (!IsValid(Train) || !Train->HasAuthority()) return Out;
     Out.bValid = true;
+    Out.DriveMode = Train->DriveMode;
     Out.RailwayPlan = Train->ActivePlan;
     Out.RailwayPlan.NetworkRevision = 0;
     Out.Distance = Train->Distance;
@@ -28,6 +29,7 @@ void FRailwayTrainSaveGame::LoadTrain(ARailwayTrain* Train) const
     if (RailwayPlan.Sections.IsEmpty() && (State == ERailwayState::Idle || State == ERailwayState::InvalidRoute))
     {
         Train->ResetPlan();
+        Train->DriveMode = DriveMode;
         Train->SetState(State);
         Train->PublishMoveState(true);
         return;

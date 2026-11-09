@@ -19,12 +19,13 @@ struct RAILWAY_API FRailwayTrainSaveGame
 	void LoadTrain(ARailwayTrain* Train) const;
 	
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
-	bool bValid = false;
+    bool bValid = false;
+
+    UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
+    ERailwayDriveMode DriveMode = ERailwayDriveMode::Automatic;
 	
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
 	FRailwayPlan RailwayPlan;
-	
-
 	
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
 	double Distance = 0;

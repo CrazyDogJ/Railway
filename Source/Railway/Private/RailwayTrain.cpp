@@ -126,6 +126,7 @@ void ARailwayTrain::UpdateVelocity(const bool bReverse) const
 void ARailwayTrain::ResetPlan()
 {
     ++RunRevision;
+    DriveInput = 0.f;
     Speed = 0;
     UpdateVelocity();
     ActivePlan = FRailwayPlan();
@@ -163,6 +164,11 @@ bool ARailwayTrain::StartRoute()
 }
 
 bool ARailwayTrain::BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan& OutPlan, FString& OutError) const
+{
+    return BuildPlanFrom(Legs, TOptional<double>(), OutPlan, OutError);
+}
+
+bool ARailwayTrain::BuildPlanFrom(const TArray<FRailwayLeg>& Legs, TOptional<double> FirstEntry, FRailwayPlan& OutPlan, FString& OutError) const
 {
     OutPlan = FRailwayPlan();
     OutError.Reset();
@@ -228,6 +234,8 @@ bool ARailwayTrain::BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan
             return Reject(I, TEXT("Snap track endpoints to their junction"));
     }
 
+    if (FirstEntry.IsSet()) Entries[0] = FirstEntry.GetValue();
+
     TMultiMap<ARailwayTrack*, FRailwayStation> Markers;
     for (TActorIterator<ARailwayStationMarker> It(GetWorld()); It; ++It)
     {
@@ -247,6 +255,10 @@ bool ARailwayTrain::BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan
         const bool bLoop = Part.Track->Spline->IsClosedLoop();
         const double Length = Part.Track->Spline->GetSplineLength();
         double Travel = Direction * (Exits[I] - Entries[I]);
+        // When changing branches exactly at the joint there is no remaining first arc.
+        if (FirstEntry.IsSet() && I == 0 && Legs.Num() > 1 && Legs[1].Track != Part.Track &&
+            (FMath::Abs(Travel) <= UE_SMALL_NUMBER || (bLoop && FMath::IsNearlyEqual(FMath::Abs(Travel), Length, UE_SMALL_NUMBER))))
+            continue;
         if (bLoop)
         {
             Travel = WrapDistance(Travel, Length);
@@ -276,6 +288,7 @@ bool ARailwayTrain::BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan
         Base += Travel;
         Plan.Sections.Add(FRailwaySection{Part, Entries[I], Travel});
     }
+    Plan.Stops.StableSort([](const FRailwayPlannedStop& A, const FRailwayPlannedStop& B) { return A.Distance < B.Distance; });
     OutPlan = MoveTemp(Plan);
     return true;
 }
@@ -290,7 +303,7 @@ bool ARailwayTrain::StartPreparedRoute(const FRailwayPlan& Plan, double StartDis
     return BeginPlan(Plan, StartDistance, nullptr, OutError);
 }
 
-bool ARailwayTrain::BeginPlan(const FRailwayPlan& Plan, double StartDistance, const FRailwayTrainSaveGame* Saved, FString& OutError)
+bool ARailwayTrain::BeginPlan(const FRailwayPlan& Plan, double StartDistance, const FRailwayTrainSaveGame* Saved, FString& OutError, bool bKeepDriveInput)
 {
     OutError.Reset();
     TArray<double> NewEnds;
@@ -345,6 +358,12 @@ bool ARailwayTrain::BeginPlan(const FRailwayPlan& Plan, double StartDistance, co
 
     FRailwayPlan SortedPlan = Plan;
     SortedPlan.Stops.StableSort([](const FRailwayPlannedStop& A, const FRailwayPlannedStop& B) { return A.Distance < B.Distance; });
+    if (Plan.bFinishAtLastStop && (SortedPlan.Stops.IsEmpty() || StartDistance > SortedPlan.Stops.Last().Distance))
+    {
+        OutError = TEXT("Direct service requires a destination at or ahead of the start");
+        return false;
+    }
+    const double Terminus = Plan.bFinishAtLastStop ? SortedPlan.Stops.Last().Distance : Total;
     if (Saved)
     {
         const int32 Cursor = Saved->NextStop;
@@ -352,7 +371,7 @@ bool ARailwayTrain::BeginPlan(const FRailwayPlan& Plan, double StartDistance, co
             (Cursor > 0 && SortedPlan.Stops[Cursor-1].Distance > StartDistance) ||
             (SortedPlan.Stops.IsValidIndex(Cursor) && SortedPlan.Stops[Cursor].Distance < StartDistance) ||
             (Saved->State == ERailwayState::Dwelling && (Cursor == 0 || SortedPlan.Stops[Cursor-1].Distance != StartDistance)) ||
-            (Saved->State == ERailwayState::Finished && (StartDistance != Total || Cursor != SortedPlan.Stops.Num())) ||
+            (Saved->State == ERailwayState::Finished && (StartDistance != Terminus || Cursor != SortedPlan.Stops.Num())) ||
             !FMath::IsFinite(Saved->Speed) || Saved->Speed < 0 || !FMath::IsFinite(Saved->Wait) || Saved->Wait < 0)
         {
             OutError = TEXT("Invalid train progress in save");
@@ -386,8 +405,110 @@ bool ARailwayTrain::BeginPlan(const FRailwayPlan& Plan, double StartDistance, co
     if (Cast<ARailwayTrack>(GetAttachParentActor()))
         DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
     if (!UpdatePose()) return false;
+    if (Saved) DriveMode = Saved->DriveMode;
+    if (!bKeepDriveInput) DriveInput = 0.f;
     SetState(InitialState);
     PublishMoveState(true);
+    return true;
+}
+
+void ARailwayTrain::ServerSetDriveMode_Implementation(ERailwayDriveMode NewMode)
+{
+    if (NewMode != ERailwayDriveMode::Manual && NewMode != ERailwayDriveMode::Automatic) return;
+    if (NewMode == DriveMode) return;
+    DriveInput = 0.f;
+    DriveMode = NewMode;
+    ForceNetUpdate();
+}
+
+void ARailwayTrain::ServerSetDriveInput_Implementation(float Value)
+{
+    if (DriveMode == ERailwayDriveMode::Manual && FMath::IsFinite(Value))
+        DriveInput = FMath::Clamp(Value, -1.f, 1.f);
+}
+
+bool ARailwayTrain::MakeDirectPlan(const FRailwayPlan& Plan, int32 DestinationStopIndex, FRailwayPlan& OutPlan)
+{
+    if (!Plan.Stops.IsValidIndex(DestinationStopIndex)) return false;
+    const FRailwayPlannedStop Destination = Plan.Stops[DestinationStopIndex];
+    OutPlan = Plan;
+    OutPlan.Stops.Reset();
+    OutPlan.Stops.Add(Destination);
+    OutPlan.bFinishAtLastStop = true;
+    OutPlan.NetworkRevision = 0;
+    return true;
+}
+
+bool ARailwayTrain::GoDirectToStop(int32 DestinationStopIndex, FString& OutError)
+{
+    if (!HasAuthority() || (State != ERailwayState::Running && State != ERailwayState::Dwelling) ||
+        DestinationStopIndex < NextStop || !ActivePlan.Stops.IsValidIndex(DestinationStopIndex))
+    {
+        OutError = TEXT("Select an unserved stop on an active server train");
+        return false;
+    }
+    FRailwayPlan Direct;
+    MakeDirectPlan(ActivePlan, DestinationStopIndex, Direct);
+    return ApplyReplacementPlan(Direct, Distance, OutError);
+}
+
+bool ARailwayTrain::ApplyReplacementPlan(FRailwayPlan& NewPlan, double StartDistance, FString& OutError)
+{
+    FRailwayTrainSaveGame Progress;
+    Progress.State = State;
+    Progress.DriveMode = DriveMode;
+    Progress.Speed = Speed;
+    if (State == ERailwayState::Dwelling)
+    {
+        FRailwayPlannedStop CurrentStop = ActivePlan.Stops[NextStop-1];
+        CurrentStop.Distance = StartDistance;
+        NewPlan.Stops.Insert(CurrentStop, 0);
+        Progress.NextStop = 1;
+        Progress.Wait = Wait;
+        Progress.bPreLeaveSent = bPreLeaveSent;
+    }
+    return BeginPlan(NewPlan, StartDistance, &Progress, OutError, true);
+}
+
+bool ARailwayTrain::ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FString& OutError)
+{
+    if (!HasAuthority() || (State != ERailwayState::Running && State != ERailwayState::Dwelling) ||
+        NewLegs.IsEmpty() || !ActivePlan.Sections.IsValidIndex(Leg))
+    {
+        OutError = TEXT("An active server train and a remaining route are required");
+        return false;
+    }
+    const FRailwayLeg& Current = ActivePlan.Sections[Leg].Leg;
+    if (NewLegs[0].Track != Current.Track || NewLegs[0].bReverse != Current.bReverse)
+    {
+        OutError = TEXT("The first leg must match the occupied track and direction");
+        return false;
+    }
+    int32 SectionIndex;
+    double Local;
+    FTransform Pose;
+    if (!SampleRoute(Distance, SectionIndex, Local, Pose))
+    {
+        OutError = TEXT("Cannot locate the train on its current track");
+        return false;
+    }
+    FRailwayPlan RemainingPlan;
+    if (!BuildPlanFrom(NewLegs, TOptional<double>(Local), RemainingPlan, OutError)) return false;
+
+    // Do not serve the same marker twice when rerouting at a platform. Consume at most one
+    // matching new stop per served occurrence so co-located stops still work.
+    for (int32 I = NextStop - 1; I >= 0 && FMath::IsNearlyEqual(ActivePlan.Stops[I].Distance, Distance, .001); --I)
+    {
+        const FRailwayStation& Served = ActivePlan.Stops[I].Station;
+        const int32 Match = RemainingPlan.Stops.IndexOfByPredicate([&](const FRailwayPlannedStop& S)
+        {
+            return S.Distance <= .001 && S.Station.Name == Served.Name && S.Station.Position == Served.Position;
+        });
+        if (Match != INDEX_NONE) RemainingPlan.Stops.RemoveAt(Match);
+    }
+
+    if (!ApplyReplacementPlan(RemainingPlan, 0, OutError)) return false;
+    Route = NewLegs;
     return true;
 }
 
@@ -480,6 +601,15 @@ void ARailwayTrain::Step(double Dt)
         const double Consumed = FMath::Min(Wait, Dt);
         Wait -= Consumed;
         Dt -= Consumed;
+        if (ActivePlan.bFinishAtLastStop && NextStop == ActivePlan.Stops.Num())
+        {
+            if (Wait <= 0)
+            {
+                CurrentStation = NAME_None;
+                SetState(ERailwayState::Finished);
+            }
+            return;
+        }
         if (!bPreLeaveSent && Wait <= FMath::Max(0.f, PreStationLeaveTime))
         {
             bPreLeaveSent = true;
@@ -487,6 +617,8 @@ void ARailwayTrain::Step(double Dt)
             if (RunRevision != Revision) return;
         }
         if (Wait > 0) return;
+        const bool bAtTrackEnd = NextStop == ActivePlan.Stops.Num() && Distance == Ends.Last();
+        if (!bAtTrackEnd && DriveMode == ERailwayDriveMode::Manual && DriveInput <= 0.f) return;
         OnStationLeave.Broadcast(CurrentStation);
         if (RunRevision != Revision) return;
         CurrentStation = NAME_None;
@@ -494,15 +626,26 @@ void ARailwayTrain::Step(double Dt)
         if (RunRevision != Revision) return;
     }
 
-    const double Target = ActivePlan.Stops.IsValidIndex(NextStop) ? ActivePlan.Stops[NextStop].Distance : Ends.Last();
+    const double Target = ActivePlan.Stops.IsValidIndex(NextStop) ? ActivePlan.Stops[NextStop].Distance :
+        (ActivePlan.bFinishAtLastStop ? ActivePlan.Stops.Last().Distance : Ends.Last());
     const double Remaining = Target - Distance;
     const double Brake = FMath::Max(1.f, Braking);
     // Reserve the next step's travel as well as the continuous braking distance.
     const double BrakeStep = Brake * Dt;
     const double SafeSpeed = FMath::Sqrt(BrakeStep * BrakeStep + 2 * Brake * Remaining) - BrakeStep;
     const double Requested = FMath::Max(0.f, ExternalSpeedLimit >= 0 ? FMath::Min(ExternalSpeedLimit, CruiseSpeed) : CruiseSpeed);
-    const double CruiseDelta = (Requested - Speed) * (1.0 - FMath::Exp(-Dt / FMath::Max(.01f, ResponseTime)));
-    const double Desired = FMath::Min(Speed + CruiseDelta, SafeSpeed);
+    double DriverTarget;
+    if (DriveMode == ERailwayDriveMode::Manual)
+    {
+        const double Rate = DriveInput >= 0.f ? FMath::Max(1.f, Acceleration) : Brake;
+        DriverTarget = FMath::Clamp(Speed + DriveInput * Rate * Dt, 0.0, Requested);
+    }
+    else
+    {
+        const double CruiseDelta = (Requested - Speed) * (1.0 - FMath::Exp(-Dt / FMath::Max(.01f, ResponseTime)));
+        DriverTarget = Speed + CruiseDelta;
+    }
+    const double Desired = FMath::Min(DriverTarget, SafeSpeed);
     Speed += FMath::Clamp(Desired - Speed, -BrakeStep, FMath::Max(1.f, Acceleration) * Dt);
     Distance += FMath::Min(Remaining, Speed * Dt);
     const bool bArrived = Target - Distance <= 0.01;
@@ -516,6 +659,7 @@ void ARailwayTrain::Step(double Dt)
     if (ActivePlan.Stops.IsValidIndex(NextStop))
     {
         const FRailwayStation Station = ActivePlan.Stops[NextStop++].Station;
+        DriveInput = 0.f;
         Wait = Station.DwellSeconds;
         bPreLeaveSent = false;
         CurrentStation = Station.Name;
@@ -665,4 +809,6 @@ void ARailwayTrain::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& 
     // Update transform for client.
     DOREPLIFETIME(ThisClass, ActivePlan);
     DOREPLIFETIME(ThisClass, TrainMoveState);
+    DOREPLIFETIME(ThisClass, DriveMode);
+    DOREPLIFETIME(ThisClass, DriveInput);
 }

@@ -10,10 +10,10 @@ struct RAILWAY_API FRailwayLeg
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Route")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Route")
 	TObjectPtr<ARailwayTrack> Track;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Route")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Route")
 	bool bReverse = false;
 };
 
@@ -72,10 +72,17 @@ struct RAILWAY_API FRailwayPlan
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
 	TArray<FRailwayPlannedStop> Stops;
 
+    // Finish service after dwelling at the last scheduled stop, even mid-section.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
+    bool bFinishAtLastStop = false;
+
     // Replicated with the plan, omitted from disk saves. Zero means no run yet.
     UPROPERTY(Transient)
     uint32 NetworkRevision = 0;
 };
+
+UENUM(BlueprintType)
+enum class ERailwayDriveMode : uint8 { Automatic, Manual };
 
 UENUM(BlueprintType)
 enum class ERailwayState : uint8 { Idle, Running, Dwelling, Finished, InvalidRoute };

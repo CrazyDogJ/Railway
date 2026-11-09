@@ -42,3 +42,12 @@
 服务端驱动 Step。ActivePlan 变化时复制线路；TrainMoveState 的 RepNotify 将带服务器时间的累计里程样本送入客户端缓冲区。客户端按计划版本配对、在两份样本之间沿轨道插值。Snapshot Rate Hz 默认 15，Interpolation Delay 默认 0.15 秒（列车蓝图的 Railway → Networking）。客户端中 Distance、Leg 和 Speed 对应当前显示位置，权威到站和离站事件仍由服务端驱动。远端需要已加载、可解析且几何一致的轨道。读档和重开发车使用新版本号，等待新计划和样本就绪后直接定位。
 
 Get Save Game Data 保存实际执行的计划及累计里程、运行状态和停站游标。行驶时保存速度，停站时保存剩余时间和预离站通知是否已发。Leg 和 Current Station 在加载时推导；同里程多个停站仍通过 NextStop 区分。旧的按属性名序列化的存档缺少预离站标记，若在提示之后存档，恢复时可能再次提示。自定义计划中的 Track 引用必须能在加载时解析到原关卡中的轨道。
+
+## 玩家驾驶、改线与直达
+
+列车默认 Automatic。单机可直接从玩家输入蓝图调用 **Server Set Drive Mode** 切换 Manual，再调用 **Server Set Drive Input**。参数是持续生效的手柄位置，+1 全牵引，0 惰行，−1 全制动。方向由 Route 的 Reverse 决定。按键松开时传 0，模拟轴只在数值发生有意义的变化时提交。切换模式保留速度并回空挡；列车仍受 Cruise Speed、External Speed Limit、计划停车点和终点制动约束。到站时手柄回零，停留时间满足后要给正牵引才能离开中间站。途中制动到零保持 Running，可以重新加速。存档恢复驾驶模式和速度，驾驶输入回零。
+
+- **行前直达**。Build Route Plan → 从返回的 Stops 选目标索引 → Make Direct Plan → 用其输出调用 Start Prepared Route。Stops 按实际行驶顺序排列，同名站或不同圈次可以分开选。直达计划保留完整轨道几何，仅把选中站列入停站表，目的站停留结束进入 Finished。Get Route Length 仍然返回几何行程长度。
+- **行中越站**。在服务器对当前 Active Plan 调用 Go Direct To Stop，传尚未服务的停站索引（从 Next Stop 起算）。当前速度及停站倒计时保留，中间站不会触发到离站事件，目的站不触发发车事件。直达范围为原计划经过的站点。越站后 Active Plan 的停站索引会改变，UI 应重新获取。
+- **改变线路**。在服务器调用 Change Remaining Route，传入从当前轨道开始的新 Legs；首项须与当前段 Track、Reverse 相同。后续段使用现有关联的 Junction。成功时列车从当前位置进入新计划，新计划的里程从 0 开始；当前速度、驾驶输入和正在进行的停留延续。改线重新生成沿途停站表，如果要直达，随后在新表中选站。失败可读取 Out Error，原行程继续执行。
+- **联网接入**。由服务器将可驾驶列车的 Owner 设为获准驾驶的 PlayerController，拥有者可调用上述两个驾驶 RPC。选线与选站可从玩家自己的 PlayerController 发 Run On Server 事件，服务器确认驾驶权和所选计划仍有效后，调用 Change Remaining Route 或 Go Direct To Stop，并将失败原因反馈给 UI。交还驾驶权时先在服务器回空挡或切回 Automatic。远端显示继续走运动快照插值。

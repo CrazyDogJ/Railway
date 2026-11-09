@@ -49,6 +49,30 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion", meta=(ClampMin="0.01", Units="s"))
     float ResponseTime = 0.45f;
 
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category="Railway|Driving")
+    ERailwayDriveMode DriveMode = ERailwayDriveMode::Automatic;
+
+    // Signed traction / brake lever. Zero coasts. Submit on input changes from the owning player.
+    UFUNCTION(BlueprintCallable, Server, Reliable, Category="Railway|Driving")
+    void ServerSetDriveInput(float Value);
+
+    UFUNCTION(BlueprintCallable, Server, Reliable, Category="Railway|Driving")
+    void ServerSetDriveMode(ERailwayDriveMode NewMode);
+
+    UPROPERTY(Transient, BlueprintReadOnly, Replicated, Category="Railway|Driving")
+    float DriveInput = 0.f;
+
+    // Index selects an occurrence in Plan.Stops, including repeated names and laps.
+    UFUNCTION(BlueprintCallable, Category="Railway|Route")
+    static bool MakeDirectPlan(const FRailwayPlan& Plan, int32 DestinationStopIndex, FRailwayPlan& OutPlan);
+
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Route")
+    bool GoDirectToStop(int32 DestinationStopIndex, FString& OutError);
+
+    // Supply the current directed track first, then the desired connected tracks.
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Route")
+    bool ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FString& OutError);
+
     // Do not modify this, use SetState instead.
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Railway")
     ERailwayState State = ERailwayState::Idle;
@@ -154,7 +178,9 @@ private:
     void PublishMoveState(bool bForce);
     void TickClientPresentation();
     void ResetPlan();
-    bool BeginPlan(const FRailwayPlan& Plan, double StartDistance, const FRailwayTrainSaveGame* Saved, FString& OutError);
+    bool BuildPlanFrom(const TArray<FRailwayLeg>& Legs, TOptional<double> FirstEntry, FRailwayPlan& OutPlan, FString& OutError) const;
+    bool ApplyReplacementPlan(FRailwayPlan& NewPlan, double StartDistance, FString& OutError);
+    bool BeginPlan(const FRailwayPlan& Plan, double StartDistance, const FRailwayTrainSaveGame* Saved, FString& OutError, bool bKeepDriveInput = false);
     TArray<FRailwayMoveState> MoveSamples;
     double LastRenderTime = -1.0;
     TArray<double> Ends;
