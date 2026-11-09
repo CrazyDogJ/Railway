@@ -1,8 +1,33 @@
 #include "RailwayTrack.h"
+#include "RailwayTrackPlacement.h"
+#include "RailwayRouteGeometry.h"
+#include "Components/SceneComponent.h"
 #include "Components/SplineComponent.h"
 #include "Components/ArrowComponent.h"
 #include "Components/TextRenderComponent.h"
 #include "Engine/World.h"
+
+namespace Railway::Placement
+{
+void DetachFromTrack(AActor& Actor)
+{
+    if (Cast<ARailwayTrack>(Actor.GetAttachParentActor()))
+        Actor.DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+}
+
+void AttachToSpline(AActor& Actor, USplineComponent& Spline)
+{
+    if (Actor.GetRootComponent()->GetAttachParent() != &Spline)
+        Actor.AttachToComponent(&Spline, FAttachmentTransformRules::KeepWorldTransform);
+}
+
+void ApplyPose(AActor& Actor, const FTransform& Pose, double PositionTolerance, double RotationTolerance)
+{
+    if (!Actor.GetActorLocation().Equals(Pose.GetLocation(), PositionTolerance) ||
+        !Actor.GetActorQuat().Equals(Pose.GetRotation(), RotationTolerance))
+        Actor.SetActorLocationAndRotation(Pose.GetLocation(), Pose.GetRotation());
+}
+}
 
 ARailwayTrackAnchor::ARailwayTrackAnchor()
 {
@@ -33,17 +58,14 @@ void ARailwayTrackAnchor::RefreshAnchor()
 {
     if (!IsValid(HostTrack) || !IsValid(HostTrack->Spline))
     {
-        if (Cast<ARailwayTrack>(GetAttachParentActor()))
-            DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+        Railway::Placement::DetachFromTrack(*this);
         return;
     }
     USplineComponent* S = HostTrack->Spline;
-    if (RootComponent->GetAttachParent() != S)
-        AttachToComponent(S, FAttachmentTransformRules::KeepWorldTransform);
-    const float Distance = S->GetSplineLength() * TrackPosition;
+    Railway::Placement::AttachToSpline(*this, *S);
+    const double Distance = Railway::Geometry::DistanceAtPosition(*S, TrackPosition);
     const auto Pose = S->GetTransformAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
-    if (!GetActorLocation().Equals(Pose.GetLocation(), .001) || !GetActorQuat().Equals(Pose.GetRotation(), .00001))
-        SetActorLocationAndRotation(Pose.GetLocation(), Pose.GetRotation());
+    Railway::Placement::ApplyPose(*this, Pose, .001, .00001);
 }
 
 void ARailwayTrackAnchor::OnConstruction(const FTransform& Transform)
@@ -74,15 +96,22 @@ void ARailwayTrackAnchor::Tick(float DeltaSeconds)
 }
 #endif
 
-ARailwayJunction::ARailwayJunction()
-{
 #if WITH_EDITORONLY_DATA
-    auto* Marker = CreateEditorOnlyDefaultSubobject<UArrowComponent>(TEXT("JunctionMarker"));
+void ARailwayTrackAnchor::CreateMarkerArrow(FName SubobjectName, FColor Color)
+{
+    auto* Marker = CreateEditorOnlyDefaultSubobject<UArrowComponent>(SubobjectName);
     if (Marker)
     {
         Marker->SetupAttachment(RootComponent);
-        Marker->ArrowColor = FColor::Yellow;
+        Marker->ArrowColor = Color;
     }
+}
+#endif
+
+ARailwayJunction::ARailwayJunction()
+{
+#if WITH_EDITORONLY_DATA
+    CreateMarkerArrow(TEXT("JunctionMarker"), FColor::Yellow);
 #endif
 }
 
@@ -99,13 +128,13 @@ ARailwayStationMarker::ARailwayStationMarker()
         Label->SetWorldSize(55.f);
         Label->SetHiddenInGame(true);
     }
-    auto* Marker = CreateEditorOnlyDefaultSubobject<UArrowComponent>(TEXT("StationMarker"));
-    if (Marker)
-    {
-        Marker->SetupAttachment(RootComponent);
-        Marker->ArrowColor = FColor::Cyan;
-    }
+    CreateMarkerArrow(TEXT("StationMarker"), FColor::Cyan);
 #endif
+}
+
+FRailwayStation ARailwayStationMarker::GetStationDefinition() const
+{
+    return FRailwayStation{StationName, TrackPosition, DwellSeconds};
 }
 
 void ARailwayStationMarker::OnConstruction(const FTransform& Transform)
