@@ -40,7 +40,7 @@ FGuid HashCurve(const USplineComponent& Spline)
     return MD5HashToGuid(Hash);
 }
 
-FGuid JunctionSignature(const ARailwayJunction* Junction, const USplineComponent& Spline, int32 Point)
+FGuid JunctionSignature(const ARailwayJunction* Junction, const USplineComponent& Spline, int32 Point, bool bLegacyAlpha)
 {
     if (!IsValid(Junction)) return FGuid();
     // 整体平移线路保持有效，只改变岔口或一侧端点会改变连接的吸附状态。
@@ -48,14 +48,33 @@ FGuid JunctionSignature(const ARailwayJunction* Junction, const USplineComponent
     const bool bSnapped = FVector::DistSquared(End, Junction->GetActorLocation()) <= 1.0;
     const FGuid Joint = FGuid::Combine(Junction->RailwayId, FGuid(0, 0, 0, bSnapped ? 1 : 0));
     if (!IsValid(Junction->HostTrack)) return Joint;
-    uint32 PositionBits;
-    FMemory::Memcpy(&PositionBits, &Junction->TrackPosition, sizeof(PositionBits));
-    return FGuid::Combine(FGuid::Combine(Joint, Junction->HostTrack->RailwayId),
-        FGuid(0, 0, 0, PositionBits));
+    const FGuid HostJoint = FGuid::Combine(Joint, Junction->HostTrack->RailwayId);
+    if (bLegacyAlpha)
+    {
+        const USplineComponent* HostSpline = Junction->HostTrack->Spline;
+        if (!IsValid(HostSpline) || HostSpline->GetSplineLength() <= 0) return FGuid();
+        const float Alpha = static_cast<float>(Junction->TrackDistance / HostSpline->GetSplineLength());
+        uint32 Bits;
+        FMemory::Memcpy(&Bits, &Alpha, sizeof(Bits));
+        return FGuid::Combine(HostJoint, FGuid(0, 0, 0, Bits));
+    }
+    uint64 Bits;
+    FMemory::Memcpy(&Bits, &Junction->TrackDistance, sizeof(Bits));
+    return FGuid::Combine(HostJoint, FGuid(0, 2, static_cast<uint32>(Bits >> 32), static_cast<uint32>(Bits)));
 }
 }
 
 FGuid ARailwayTrack::GetLayoutSignature() const
+{
+    return CalculateLayoutSignature(false);
+}
+
+FGuid ARailwayTrack::GetLegacyLayoutSignature() const
+{
+    return CalculateLayoutSignature(true);
+}
+
+FGuid ARailwayTrack::CalculateLayoutSignature(bool bLegacyAlpha) const
 {
     if (!IsValid(Spline)) return FGuid();
     const int32 Version = Spline->GetVersion();
@@ -66,14 +85,16 @@ FGuid ARailwayTrack::GetLayoutSignature() const
         CachedSplineVersion = Version;
     }
     if (Spline->IsClosedLoop()) return CachedCurveSignature;
-    return FGuid::Combine(FGuid::Combine(CachedCurveSignature, JunctionSignature(StartJunction, *Spline, 0)),
-        JunctionSignature(EndJunction, *Spline, Spline->GetNumberOfSplinePoints() - 1));
+    return FGuid::Combine(FGuid::Combine(CachedCurveSignature, JunctionSignature(StartJunction, *Spline, 0, bLegacyAlpha)),
+        JunctionSignature(EndJunction, *Spline, Spline->GetNumberOfSplinePoints() - 1, bLegacyAlpha));
 }
 
 void ARailwayTrack::PostLoad()
 {
     Super::PostLoad();
     if (IsTemplate()) return;
+    if (IsValid(Spline)) Spline->ConditionalPostLoad();
+    UpgradeStationDistances();
     // 只迁移没有身份的旧关卡行。首次升级后保存地图，之后数组重排不会改变身份。
     for (int32 Index = 0; Index < Stations.Num(); ++Index)
     {
@@ -82,8 +103,17 @@ void ARailwayTrack::PostLoad()
     }
 }
 
+void ARailwayTrack::UpgradeStationDistances()
+{
+    if (IsTemplate() || !IsValid(Spline)) return;
+    const float Length = Spline->GetSplineLength();
+    if (Length <= 0) return;
+    for (FRailwayStation& Station : Stations) Station.UpgradeTrackDistance(Length);
+}
+
 void ARailwayTrack::InitializeStationIds()
 {
+    UpgradeStationDistances();
     if (IsTemplate() || !HasAuthority()) return;
     for (FRailwayStation& Station : Stations)
         if (!Station.StationId.IsValid()) Station.StationId = FGuid::NewGuid();
@@ -102,6 +132,8 @@ void ARailwayTrack::PostEditChangeProperty(FPropertyChangedEvent& Event)
     {
         // Details 面板将复制出的新行插在原行之前，只有新行需要重新分配 ID。
         const int32 Index = Event.GetArrayIndex(TEXT("Stations"));
+        if (Event.GetPropertyName() == GET_MEMBER_NAME_CHECKED(FRailwayStation, TrackDistance) && Stations.IsValidIndex(Index))
+            Stations[Index].Position = -1.f;
         if (Event.ChangeType == EPropertyChangeType::Duplicate && Stations.IsValidIndex(Index))
             Stations[Index].StationId = FGuid::NewGuid();
         InitializeStationIds();
@@ -120,7 +152,7 @@ void ARailwayTrackAnchor::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& 
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
     DOREPLIFETIME(ThisClass, HostTrack);
-    DOREPLIFETIME(ThisClass, TrackPosition);
+    DOREPLIFETIME(ThisClass, TrackDistance);
 }
 
 void ARailwayStationMarker::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const

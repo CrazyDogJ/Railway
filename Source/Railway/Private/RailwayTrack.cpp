@@ -1,6 +1,7 @@
 #include "RailwayTrack.h"
 #include "RailwayTrackPlacement.h"
 #include "RailwayRouteGeometry.h"
+#include "RailwayDistanceVersion.h"
 #include "Components/SceneComponent.h"
 #include "Components/SplineComponent.h"
 #include "Components/ArrowComponent.h"
@@ -37,21 +38,69 @@ ARailwayTrackAnchor::ARailwayTrackAnchor()
 #endif
 }
 
+void ARailwayTrackAnchor::Serialize(FArchive& Ar)
+{
+    Railway::DistanceVersion::SerializePosition(Ar, TrackPosition, .5f);
+    Super::Serialize(Ar);
+}
+
+void ARailwayTrackAnchor::PostLoad()
+{
+    Super::PostLoad();
+    if (IsTemplate() || TrackPosition == -1.f || !IsValid(HostTrack)) return;
+    HostTrack->ConditionalPostLoad();
+    if (IsValid(HostTrack->Spline)) HostTrack->Spline->ConditionalPostLoad();
+    UpgradeTrackDistance();
+}
+
+void ARailwayTrackAnchor::PostRegisterAllComponents()
+{
+    Super::PostRegisterAllComponents();
+    UpgradeTrackDistance();
+}
+
+void ARailwayTrackAnchor::UpgradeTrackDistance()
+{
+    if (TrackPosition == -1.f || !IsValid(HostTrack) || !IsValid(HostTrack->Spline)) return;
+    const float Length = HostTrack->Spline->GetSplineLength();
+    if (Length <= 0) return;
+    TrackDistance = Railway::DistanceVersion::FromLegacyAlpha(FMath::Clamp(TrackPosition, 0.f, 1.f), Length);
+    TrackPosition = -1.f;
+}
+
+float ARailwayTrackAnchor::GetLegacyTrackPosition() const
+{
+    if (TrackPosition != -1.f) return TrackPosition;
+    if (!IsValid(HostTrack) || !IsValid(HostTrack->Spline)) return 0.f;
+    const float Length = HostTrack->Spline->GetSplineLength();
+    return Length > 0 ? static_cast<float>(FMath::Clamp(TrackDistance / Length, 0.0, 1.0)) : 0.f;
+}
+
+void ARailwayTrackAnchor::SetTrackAnchorAtDistance(ARailwayTrack* Track, double DistanceCm)
+{
+    if (!FMath::IsFinite(DistanceCm) || (Track && (!IsValid(Track) || Track->GetWorld() != GetWorld()))) return;
+    HostTrack = Track;
+    TrackPosition = -1.f;
+    TrackDistance = FMath::Max(0.0, DistanceCm);
+    RefreshAnchor();
+}
+
 void ARailwayTrackAnchor::SetTrackAnchor(ARailwayTrack* Track, float NormalizedPosition)
 {
     if (!FMath::IsFinite(NormalizedPosition) || (Track && (!IsValid(Track) || Track->GetWorld() != GetWorld()))) return;
-    HostTrack = Track;
-    TrackPosition = FMath::Clamp(NormalizedPosition, 0.f, 1.f);
-    RefreshAnchor();
+    if (Track && !IsValid(Track->Spline)) return;
+    const double DistanceCm = Track ? Railway::DistanceVersion::FromLegacyAlpha(
+        FMath::Clamp(NormalizedPosition, 0.f, 1.f), Track->Spline->GetSplineLength()) : TrackDistance;
+    SetTrackAnchorAtDistance(Track, DistanceCm);
 }
 
 void ARailwayTrackAnchor::ProjectToHost()
 {
     if (!IsValid(HostTrack) || !IsValid(HostTrack->Spline)) return;
     const USplineComponent* S = HostTrack->Spline;
-    const float Length = S->GetSplineLength();
-    if (Length > UE_SMALL_NUMBER)
-        TrackPosition = FMath::Clamp(S->GetDistanceAlongSplineAtLocation(GetActorLocation(), ESplineCoordinateSpace::World) / Length, 0.f, 1.f);
+    TrackDistance = Railway::Geometry::DistanceOnSpline(*S,
+        S->GetDistanceAlongSplineAtLocation(GetActorLocation(), ESplineCoordinateSpace::World));
+    TrackPosition = -1.f;
 }
 
 void ARailwayTrackAnchor::RefreshAnchor()
@@ -63,9 +112,17 @@ void ARailwayTrackAnchor::RefreshAnchor()
     }
     USplineComponent* S = HostTrack->Spline;
     Railway::Placement::AttachToSpline(*this, *S);
-    const double Distance = Railway::Geometry::DistanceAtPosition(*S, TrackPosition);
+    UpgradeTrackDistance();
+    const float Distance = Railway::Geometry::DistanceOnSpline(*S, TrackDistance);
     const auto Pose = S->GetTransformAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
     Railway::Placement::ApplyPose(*this, Pose, .001, .00001);
+}
+
+void ARailwayTrackAnchor::OnRep_Anchor()
+{
+    // 服务端复制的是已换算的厘米数。客户端不再应用本地遗留的 Alpha。
+    TrackPosition = -1.f;
+    RefreshAnchor();
 }
 
 void ARailwayTrackAnchor::OnConstruction(const FTransform& Transform)
@@ -79,6 +136,8 @@ void ARailwayTrackAnchor::PostEditChangeProperty(FPropertyChangedEvent& Event)
 {
     if (Event.GetPropertyName() == GET_MEMBER_NAME_CHECKED(ARailwayTrackAnchor, HostTrack))
         ProjectToHost();
+    else if (Event.GetPropertyName() == GET_MEMBER_NAME_CHECKED(ARailwayTrackAnchor, TrackDistance))
+        TrackPosition = -1.f;
     Super::PostEditChangeProperty(Event);
 }
 
@@ -134,7 +193,7 @@ ARailwayStationMarker::ARailwayStationMarker()
 
 FRailwayStation ARailwayStationMarker::GetStationDefinition() const
 {
-    return FRailwayStation{StationName, TrackPosition, DwellSeconds, CustomData, RailwayId};
+    return FRailwayStation{StationName, TrackDistance, DwellSeconds, CustomData, RailwayId};
 }
 
 void ARailwayStationMarker::OnConstruction(const FTransform& Transform)

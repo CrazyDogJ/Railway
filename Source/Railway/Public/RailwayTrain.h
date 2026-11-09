@@ -60,15 +60,22 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category="Railway|Driving")
     ERailwayDriveMode DriveMode = ERailwayDriveMode::Automatic;
 
-    // Signed traction / brake lever. Zero coasts. Submit on input changes from the owning player.
+    /** 手动牵引轴 [-1, 1]。正值向车头方向牵引，负值向车尾方向牵引，零为惰行。 */
     UFUNCTION(BlueprintCallable, Server, Reliable, Category="Railway|Driving")
     void ServerSetDriveInput(float Value);
+
+    /** 独立制动轴 [0, 1]。制动优先于牵引，在任一行驶方向上减速至零。 */
+    UFUNCTION(BlueprintCallable, Server, Reliable, Category="Railway|Driving")
+    void ServerSetBrakeInput(float Value);
 
     UFUNCTION(BlueprintCallable, Server, Reliable, Category="Railway|Driving")
     void ServerSetDriveMode(ERailwayDriveMode NewMode);
 
     UPROPERTY(Transient, BlueprintReadOnly, Replicated, Category="Railway|Driving")
     float DriveInput = 0.f;
+
+    UPROPERTY(Transient, BlueprintReadOnly, Replicated, Category="Railway|Driving")
+    float BrakeInput = 0.f;
 
     // Index selects an occurrence in Plan.Stops, including repeated names and laps.
     UFUNCTION(BlueprintCallable, Category="Railway|Route")
@@ -85,6 +92,7 @@ public:
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Railway")
     ERailwayState State = ERailwayState::Idle;
 
+    /** 沿计划的有符号速度（cm/s），倒车时为负。 */
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Railway")
     float Speed = 0.f;
 
@@ -158,7 +166,7 @@ public:
     UPROPERTY(Transient, BlueprintReadOnly, Category="Railway|Route", ReplicatedUsing=OnRep_ActivePlan)
     FRailwayPlan ActivePlan;
 
-    /** 沿整个行程累计行驶的厘米数，反向段也递增。 */
+    /** 行程坐标（cm）。按计划前进时递增，倒车时递减。 */
     UPROPERTY(Transient, BlueprintReadOnly, Category="Railway|Route")
     double Distance = 0;
 
@@ -190,7 +198,7 @@ public:
     FRailwayMoveState TrainMoveState;
 
 protected:
-    /** 计算一个模拟步的驾驶目标速度（cm/s）。子类按传入的限速计算牵引目标，公共运动逻辑负责加减速度约束和停车制动。 */
+    /** 计算一个模拟步的牵引目标速度（cm/s），手动模式允许负值。独立制动和计划边界由运动逻辑处理。 */
     virtual double CalculateDriverTargetSpeed(double SpeedLimit, double DeltaSeconds) const;
 
 private:
@@ -212,6 +220,7 @@ private:
     FName GetStationForState(ERailwayState InState) const;
     bool RefreshDwell();
     double ElapsedDwell = 0;
+    void ClearDriverInputs();
     void ResetMotion();
     void ResetPlan(ERailwayState NewState);
     void InstallPlan(FRailwayPlan&& Plan);

@@ -19,7 +19,7 @@ namespace Railway::Routing
     bool Build(UWorld* World, const TArray<FRailwayLeg>& Legs, TOptional<double> FirstEntry,
         FRailwayPlan& OutPlan, FString& OutError);
 
-    enum class EPlanOrigin { Prepared, IdentifiedSave, LegacySave };
+    enum class EPlanOrigin { Prepared, IdentifiedSave, AlphaIdentifiedSave, LegacySave };
 
     // 对外部、存档或新生成的计划使用同一组检查。入参按值接收，排序不会改变调用者的计划。
     bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance,

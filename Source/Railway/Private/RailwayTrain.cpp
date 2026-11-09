@@ -102,9 +102,15 @@ FName ARailwayTrain::GetStationForState(ERailwayState InState) const
     return NAME_None;
 }
 
-void ARailwayTrain::ResetMotion()
+void ARailwayTrain::ClearDriverInputs()
 {
     DriveInput = 0.f;
+    BrakeInput = 0.f;
+}
+
+void ARailwayTrain::ResetMotion()
+{
+    ClearDriverInputs();
     Speed = 0.f;
     Wait = 0;
     ElapsedDwell = 0;
@@ -229,6 +235,8 @@ bool ARailwayTrain::ApplyReplacementPlan(FRailwayPlan&& NewPlan, double StartDis
     {
         Wait = 0;
         bPreLeaveSent = false;
+        // 改线把当前位置设为新计划起点时，车后已没有可行驶区间。
+        if (StartDistance == 0 && Speed < 0) Speed = 0.f;
     }
     ActivatePlan(MoveTemp(Prepared), StartDistance, bDwelling ? 1 : 0, State);
     return true;
@@ -287,7 +295,8 @@ bool ARailwayTrain::ResolvePlannedStop(const FRailwayPlannedStop& Stop, FRailway
 {
     if (Railway::Stations::Read(GetWorld(), Stop, OutStation)) return true;
     // 刚反序列化的引用尚未绑定。只在这种情况下按世界 ID 查找，正常运行直接使用已绑定对象。
-    if (Stop.Reference.Source != ERailwayStationSource::Inline && !IsValid(Stop.Reference.SourceActor))
+    if (Stop.Reference.Source != ERailwayStationSource::Inline &&
+        (!IsValid(Stop.Reference.SourceActor) || Stop.Reference.PlannedTrackDistance == -1))
     {
         FRailwayPlannedStop Bound = Stop;
         FString Error;
@@ -331,6 +340,10 @@ void ARailwayTrain::Tick(float DeltaSeconds)
 #endif
     if (HasAuthority())
     {
+        // 行程结束后仍可沿现有计划退回。制动松开且驾驶员给反向牵引时才恢复运动。
+        if (State == ERailwayState::Finished && DriveMode == ERailwayDriveMode::Manual &&
+            DriveInput < 0.f && BrakeInput == 0.f && Distance > 0 && !ActivePlan.Sections.IsEmpty())
+            SetState(ERailwayState::Running);
         if (State == ERailwayState::Dwelling && !RefreshDwell()) return;
         if (State == ERailwayState::Running && ActivePlan.Stops.IsValidIndex(NextStop))
         {

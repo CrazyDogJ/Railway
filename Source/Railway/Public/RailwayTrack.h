@@ -15,25 +15,32 @@ class RAILWAY_API ARailwayTrackAnchor : public ARailwayNetworkActor
     GENERATED_BODY()
 public:
     ARailwayTrackAnchor();
+    virtual void Serialize(FArchive& Ar) override;
+    virtual void PostLoad() override;
+    virtual void PostRegisterAllComponents() override;
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
     /** 位置和朝向所依据的轨道，置空后可自由放置锚点。 */
-    UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Replicated, Category="Railway")
+    UPROPERTY(EditInstanceOnly, BlueprintReadOnly, ReplicatedUsing=OnRep_Anchor, Category="Railway")
     TObjectPtr<ARailwayTrack> HostTrack;
 
-    /** 从样条首点起算的弧长比例，轨道长度改变后仍按此比例定位。 */
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Replicated, Category="Railway", meta=(ClampMin="0", ClampMax="1"))
-    float TrackPosition = 0.5f;
+    /** 从宿主样条首点起算的厘米数。缩短轨道时暂时贴到末端，保留设定里程。 */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, ReplicatedUsing=OnRep_Anchor, Category="Railway", meta=(ClampMin="0", Units="cm"))
+    double TrackDistance = 0;
 
-    /** 将保存的弧长比例应用到世界姿态和父级附着。 */
+    /** 将保存的里程应用到世界姿态和父级附着。 */
     UFUNCTION(BlueprintCallable, Category="Railway|Anchor")
     void RefreshAnchor();
 
-    // Bind to a normalized position and immediately update the attachment.
+    /** 按样条里程（cm）绑定锚点。传空轨道可解除附着。 */
     UFUNCTION(BlueprintCallable, Category="Railway|Anchor")
+    void SetTrackAnchorAtDistance(ARailwayTrack* Track, double DistanceCm);
+
+    /** 旧蓝图仍按原输入单位调用，绑定时立即换算成厘米。 */
+    UFUNCTION(BlueprintCallable, Category="Railway|Anchor", meta=(DeprecatedFunction, DeprecationMessage="Use Set Track Anchor At Distance (cm)."))
     void SetTrackAnchor(ARailwayTrack* Track, float NormalizedPosition);
 
-    /** 将锚点当前位置投影到宿主样条，供拖动或更换宿主时更新比例。 */
+    /** 将当前位置投影到宿主样条，记录投影点距首点的弧长。 */
     UFUNCTION(BlueprintCallable, Category="Railway|Anchor")
     void ProjectToHost();
     virtual void OnConstruction(const FTransform& Transform) override;
@@ -48,6 +55,19 @@ public:
 protected:
     void CreateMarkerArrow(FName SubobjectName, FColor Color);
 #endif
+
+private:
+    void UpgradeTrackDistance();
+
+    UFUNCTION()
+    void OnRep_Anchor();
+
+    UFUNCTION(BlueprintGetter, Category="Railway|Anchor")
+    float GetLegacyTrackPosition() const;
+
+    // 保留旧反射名加载已有 Actor 和蓝图。仅等待宿主时保存非负 Alpha。
+    UPROPERTY(BlueprintGetter=GetLegacyTrackPosition, Category="Railway|Anchor", meta=(AllowPrivateAccess="true", DeprecatedProperty, DeprecationMessage="Use Track Distance (cm)."))
+    float TrackPosition = -1.f;
 };
 
 UCLASS(Blueprintable)
@@ -100,6 +120,8 @@ public:
     /** 为运行时新增的内嵌站点分配身份。重复的现有 ID 由规划器报告。 */
     void InitializeStationIds();
     FGuid GetLayoutSignature() const;
+    /** 仅用于辨认使用 Alpha 计算岔口签名的旧计划。 */
+    FGuid GetLegacyLayoutSignature() const;
 #if WITH_EDITOR
     virtual bool ShouldTickIfViewportsOnly() const override { return true; }
     virtual void Tick(float DeltaSeconds) override;
@@ -126,6 +148,8 @@ public:
     void SnapEndpointsToJunctions();
 
 private:
+    FGuid CalculateLayoutSignature(bool bLegacyAlpha) const;
+    void UpgradeStationDistances();
     mutable TWeakObjectPtr<USplineComponent> CachedSpline;
     mutable int32 CachedSplineVersion = INDEX_NONE;
     mutable FGuid CachedCurveSignature;

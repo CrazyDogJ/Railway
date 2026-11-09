@@ -8,17 +8,17 @@
 
 namespace
 {
-constexpr int32 RailwaySaveVersion = 1;
+constexpr int32 RailwaySaveVersion = 2;
 
 // NextStop 同时编码已服务站次和正在停靠的站次。相同里程的站不能仅按距离推导。
 bool IsValidProgress(const FRailwayTrainSaveGame& Saved, const FRailwayPreparedPlan& Prepared)
 {
     const TArray<FRailwayPlannedStop>& Stops = Prepared.Plan.Stops;
     const int32 Cursor = Saved.NextStop;
+    // 倒车可退到已服务站次之前，游标仍指向下一待服务站。
     if (Cursor < 0 || Cursor > Stops.Num() ||
-        (Cursor > 0 && Stops[Cursor - 1].Distance > Saved.Distance) ||
         (Stops.IsValidIndex(Cursor) && Stops[Cursor].Distance < Saved.Distance) ||
-        !FMath::IsFinite(Saved.Speed) || Saved.Speed < 0 || !FMath::IsFinite(Saved.Wait) || Saved.Wait < 0)
+        !FMath::IsFinite(Saved.Speed) || !FMath::IsFinite(Saved.Wait) || Saved.Wait < 0)
         return false;
 
     if (Saved.State == ERailwayState::Dwelling)
@@ -98,7 +98,10 @@ bool ARailwayTrain::TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FStri
     }
 
     const bool bLegacy = Save.FormatVersion == 0;
-    const auto Origin = bLegacy ? Railway::Routing::EPlanOrigin::LegacySave : Railway::Routing::EPlanOrigin::IdentifiedSave;
+    using Railway::Routing::EPlanOrigin;
+    EPlanOrigin Origin = EPlanOrigin::IdentifiedSave;
+    if (Save.FormatVersion == 1) Origin = EPlanOrigin::AlphaIdentifiedSave;
+    if (bLegacy) Origin = EPlanOrigin::LegacySave;
     FRailwayPreparedPlan Prepared;
     if (!Railway::Routing::Prepare(GetWorld(), Save.RailwayPlan, Save.Distance, Prepared, OutError, Origin)) return false;
     if (!IsValidProgress(Save, Prepared))

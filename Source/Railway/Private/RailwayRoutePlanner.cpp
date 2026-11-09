@@ -4,6 +4,7 @@
 #include "RailwayWorldIndex.h"
 #include "RailwayRouteGeometry.h"
 #include "RailwayTrack.h"
+#include "RailwayDistanceVersion.h"
 
 namespace Railway::Routing
 {
@@ -62,12 +63,12 @@ const TCHAR* Connect(const FRailwayLeg& From, const FRailwayLeg& To, double& Exi
     else if (IsValid(Entry) && Entry->HostTrack == From.Track)
     {
         Joint = Entry;
-        ExitDistance = Geometry::DistanceAtPosition(FromSpline, Entry->TrackPosition);
+        ExitDistance = Geometry::DistanceOnSpline(FromSpline, Entry->TrackDistance);
     }
     else if (IsValid(Exit) && Exit->HostTrack == To.Track)
     {
         Joint = Exit;
-        EntryDistance = Geometry::DistanceAtPosition(ToSpline, Exit->TrackPosition);
+        EntryDistance = Geometry::DistanceOnSpline(ToSpline, Exit->TrackDistance);
     }
     else
     {
@@ -102,11 +103,11 @@ const TCHAR* CheckIdentities(const FRailwayWorldIndex& WorldIndex, const ARailwa
 bool AppendStop(const FRailwayStation& Station, const FRailwayStationRef& Ref, const FRailwaySection& Section, double Length, double Base,
     TArray<FRailwayPlannedStop>& Stops)
 {
-    if (!FMath::IsFinite(Station.Position) || Station.Position < 0 || Station.Position > 1 ||
+    if (!FMath::IsFinite(Station.TrackDistance) || Station.TrackDistance < 0 ||
         !FMath::IsFinite(Station.DwellSeconds) || Station.DwellSeconds < 0)
         return false;
 
-    const double Offset = Geometry::DistanceAtPosition(*Section.Leg.Track->Spline, Station.Position) - Section.EntryDistance;
+    const double Offset = Geometry::DistanceOnSpline(*Section.Leg.Track->Spline, Station.TrackDistance) - Section.EntryDistance;
     double Along = Section.Leg.bReverse ? -Offset : Offset;
     if (Section.Leg.Track->Spline->IsClosedLoop())
     {
@@ -268,8 +269,14 @@ static bool MigrateLegacyStops(UWorld* World, const FRailwayWorldIndex& WorldInd
         const FRailwayStationRef* Match = nullptr;
         for (const FRailwayPlannedStop& Candidate : Candidates)
         {
-            if (!FMath::IsNearlyEqual(Stop.Distance, Candidate.Distance, .001) ||
-                Stop.Station.Position != Candidate.Reference.PlannedPosition) continue;
+            if (!FMath::IsNearlyEqual(Stop.Distance, Candidate.Distance, .001)) continue;
+            const auto* Host = Cast<ARailwayTrack>(WorldIndex.Find(Candidate.Reference.HostTrackId));
+            if (!Host || !IsValid(Host->Spline)) continue;
+            // V0 可能省略等于旧默认值 0.5 的字段。比较同一宿主上旧采样精度的厘米数。
+            const float Alpha = Stop.Station.Position == -1.f ? .5f : Stop.Station.Position;
+            if (Alpha < 0 || Alpha > 1 || !FMath::IsFinite(Alpha) ||
+                static_cast<float>(Railway::DistanceVersion::FromLegacyAlpha(Alpha, Host->Spline->GetSplineLength())) !=
+                static_cast<float>(Candidate.Reference.PlannedTrackDistance)) continue;
             if (Match && !Stations::SameSource(*Match, Candidate.Reference))
             {
                 Error = FString::Printf(TEXT("Ambiguous legacy stop at %.3f cm"), Stop.Distance);
@@ -292,11 +299,12 @@ bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPre
 {
     OutError.Reset();
     const FRailwayWorldIndex WorldIndex(World);
+    const bool bIdentified = Origin == EPlanOrigin::IdentifiedSave || Origin == EPlanOrigin::AlphaIdentifiedSave;
     FVector PreviousExit = FVector::ZeroVector;
     for (int32 Index = 0; Index < Plan.Sections.Num(); ++Index)
     {
         FRailwaySection& Section = Plan.Sections[Index];
-        if (Origin == EPlanOrigin::IdentifiedSave && (!Section.TrackId.IsValid() || !Section.LayoutSignature.IsValid()))
+        if (bIdentified && (!Section.TrackId.IsValid() || !Section.LayoutSignature.IsValid()))
             return RejectLeg(Index, TEXT("Saved section is missing its track ID or layout signature"), OutError);
         if (Section.TrackId.IsValid())
         {
@@ -312,7 +320,8 @@ bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPre
         ARailwayTrack& Track = *Section.Leg.Track;
         if (const TCHAR* Error = CheckIdentities(WorldIndex, Track)) return RejectLeg(Index, Error, OutError);
         const FGuid Signature = Track.GetLayoutSignature();
-        if (Section.LayoutSignature.IsValid() && Section.LayoutSignature != Signature)
+        if (Section.LayoutSignature.IsValid() && Section.LayoutSignature != Signature &&
+            (Origin == EPlanOrigin::IdentifiedSave || Section.LayoutSignature != Track.GetLegacyLayoutSignature()))
             return RejectLeg(Index, TEXT("Track geometry or junction connections changed since this plan was built"), OutError);
         Section.TrackId = Track.RailwayId;
         Section.LayoutSignature = Signature;
@@ -321,7 +330,7 @@ bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPre
     {
         return Stop.Reference.Source == ERailwayStationSource::LegacySnapshot;
     });
-    if (bNeedsMigration && Origin != EPlanOrigin::IdentifiedSave &&
+    if (bNeedsMigration && !bIdentified &&
         !MigrateLegacyStops(World, WorldIndex, Plan, Origin == EPlanOrigin::LegacySave, OutError)) return false;
 
     TArray<double> Ends;
@@ -333,18 +342,41 @@ bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPre
     }
     for (FRailwayPlannedStop& Stop : Plan.Stops)
     {
-        if (Origin == EPlanOrigin::IdentifiedSave && (Stop.Reference.Source == ERailwayStationSource::Unspecified ||
+        if (bIdentified && (Stop.Reference.Source == ERailwayStationSource::Unspecified ||
             Stop.Reference.Source == ERailwayStationSource::LegacySnapshot))
         {
             OutError = TEXT("Saved stop is missing its source");
             return false;
         }
-        if (!WorldIndex.BindStop(Stop, OutError)) return false;
         if (!FMath::IsFinite(Stop.Distance) || Stop.Distance < 0 || Stop.Distance > Ends.Last())
         {
             OutError = TEXT("Invalid planned stop distance");
             return false;
         }
+        if (Stop.Reference.Source == ERailwayStationSource::Inline || Stop.Reference.Source == ERailwayStationSource::Unspecified)
+        {
+            // 自建站次没有宿主引用，按其累计站距定位到对应区间后再迁移旧字段。
+            if (Origin == EPlanOrigin::IdentifiedSave) Stop.Station.Position = -1.f;
+            if (Origin == EPlanOrigin::AlphaIdentifiedSave && Stop.Station.Position == -1.f)
+                Stop.Station.Position = .5f;
+            if (Stop.Station.Position != -1.f)
+            {
+                int32 SectionIndex;
+                double Local;
+                if (!Geometry::Locate(Plan, Ends, Stop.Distance, SectionIndex, Local))
+                {
+                    OutError = TEXT("Cannot resolve the track of a legacy inline station");
+                    return false;
+                }
+                Stop.Station.UpgradeTrackDistance(Plan.Sections[SectionIndex].Leg.Track->Spline->GetSplineLength());
+            }
+        }
+        else if (Origin == EPlanOrigin::IdentifiedSave && Stop.Reference.PlannedTrackDistance < 0)
+        {
+            OutError = TEXT("Saved station is missing its distance on the host track");
+            return false;
+        }
+        if (!WorldIndex.BindStop(Stop, OutError)) return false;
         if (Stop.Reference.Source != ERailwayStationSource::Inline)
         {
             const auto* Host = Cast<ARailwayTrack>(WorldIndex.Find(Stop.Reference.HostTrackId));
@@ -357,7 +389,7 @@ bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPre
                 OutError = TEXT("Cannot locate planned world station");
                 return false;
             }
-            const double StationDistance = Geometry::DistanceAtPosition(*Host->Spline, Stop.Reference.PlannedPosition);
+            const double StationDistance = Geometry::DistanceOnSpline(*Host->Spline, Stop.Reference.PlannedTrackDistance);
             const FVector StationLocation = Host->Spline->GetLocationAtDistanceAlongSpline(StationDistance, ESplineCoordinateSpace::World);
             if (FVector::Dist(Pose.GetLocation(), StationLocation) > JunctionToleranceCm)
             {

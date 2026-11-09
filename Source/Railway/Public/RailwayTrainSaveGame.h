@@ -38,6 +38,7 @@ struct RAILWAY_API FRailwayTrainSaveGame
     UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
     double Distance = 0;
 
+    /** 保存运行时的有符号速度（cm/s），驾驶输入在读档时回零。 */
     UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
     float Speed = 0;
 

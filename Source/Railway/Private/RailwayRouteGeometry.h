@@ -9,8 +9,8 @@ namespace Railway::Geometry
     // 闭合样条的首尾对应同一点，返回 [0, Length) 内的里程。调用方保证 Length > 0。
     double WrapDistance(double Distance, double Length);
 
-    // 岔口、站点和锚点按同一规则换算弧长，避免接缝处舍入不同。
-    double DistanceAtPosition(const USplineComponent& Spline, float Position);
+    // 统一按样条的 float 采样精度取有效里程。只限制采样值，不改写作者设置的距离。
+    float DistanceOnSpline(const USplineComponent& Spline, double TrackDistance);
 
     // TrackDistance 从样条首点起算（cm），采样时按开放轨道或闭环规范化。
     FTransform SampleTrack(const FRailwayLeg& Leg, double TrackDistance);

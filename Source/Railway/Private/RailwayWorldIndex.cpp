@@ -2,6 +2,8 @@
 
 #include "EngineUtils.h"
 #include "RailwayTrack.h"
+#include "RailwayDistanceVersion.h"
+#include "Components/SplineComponent.h"
 #include "Serialization/Archive.h"
 
 void FRailwayPlannedStop::PostSerialize(const FArchive& Ar)
@@ -76,9 +78,10 @@ bool Read(const UWorld* World, const FRailwayPlannedStop& Stop, FRailwayStation&
             OutStation = *Found;
         }
         else return false;
-        if (OutStation.Position != Ref.PlannedPosition) return false;
+        if (OutStation.TrackDistance != Ref.PlannedTrackDistance) return false;
     }
-    return FMath::IsFinite(OutStation.DwellSeconds) && OutStation.DwellSeconds >= 0;
+    return FMath::IsFinite(OutStation.TrackDistance) && OutStation.TrackDistance >= 0 &&
+        FMath::IsFinite(OutStation.DwellSeconds) && OutStation.DwellSeconds >= 0;
 }
 }
 
@@ -89,10 +92,21 @@ bool FRailwayWorldIndex::BindStop(FRailwayPlannedStop& Stop, FString& Error) con
     if (Ref.Source != ERailwayStationSource::Inline)
     {
         Ref.SourceActor = Find(Ref.Source == ERailwayStationSource::Marker ? Ref.StationId : Ref.HostTrackId);
-        if (!Cast<ARailwayTrack>(Find(Ref.HostTrackId)))
+        const auto* Host = Cast<ARailwayTrack>(Find(Ref.HostTrackId));
+        if (!Host || !IsValid(Host->Spline))
         {
             Error = FString::Printf(TEXT("Missing, unloaded or ambiguous host track %s"), *Ref.HostTrackId.ToString());
             return false;
+        }
+        if (Ref.PlannedTrackDistance == -1)
+        {
+            if (!FMath::IsFinite(Ref.PlannedPosition) || Ref.PlannedPosition < 0 || Ref.PlannedPosition > 1)
+            {
+                Error = TEXT("Invalid legacy station fraction");
+                return false;
+            }
+            Ref.PlannedTrackDistance = Railway::DistanceVersion::FromLegacyAlpha(Ref.PlannedPosition, Host->Spline->GetSplineLength());
+            Ref.PlannedPosition = 0;
         }
     }
     FRailwayStation Current;
@@ -123,7 +137,7 @@ bool FRailwayWorldIndex::VisitStations(ARailwayTrack& Track,
         }
         RowIds.Add(Station.StationId);
         Ref.StationId = Station.StationId;
-        Ref.PlannedPosition = Station.Position;
+        Ref.PlannedTrackDistance = Station.TrackDistance;
         if (!Visitor(Station, Ref)) return false;
     }
     Ref.Source = ERailwayStationSource::Marker;
@@ -138,7 +152,7 @@ bool FRailwayWorldIndex::VisitStations(ARailwayTrack& Track,
         const FRailwayStation Station = Marker->GetStationDefinition();
         Ref.SourceActor = Marker;
         Ref.StationId = Marker->RailwayId;
-        Ref.PlannedPosition = Station.Position;
+        Ref.PlannedTrackDistance = Station.TrackDistance;
         if (!Visitor(Station, Ref)) return false;
     }
     return true;

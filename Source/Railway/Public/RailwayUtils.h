@@ -55,9 +55,9 @@ struct RAILWAY_API FRailwayStation
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station")
 	FName Name = TEXT("Station");
 
-	// Fraction of arc length measured from spline point zero.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station", meta=(ClampMin="0", ClampMax="1"))
-	float Position = 0.5f;
+    /** 从宿主样条首点起算的厘米数，延长轨道不会改变该值。 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station", meta=(ClampMin="0", Units="cm"))
+    double TrackDistance = 0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station", meta=(ClampMin="0", Units="s"))
 	float DwellSeconds = 3.f;
@@ -69,6 +69,19 @@ struct RAILWAY_API FRailwayStation
     /** 内嵌站点和所属轨道的 ID 一起唯一定位一行。 */
     UPROPERTY(EditInstanceOnly, BlueprintReadWrite, SaveGame, AdvancedDisplay, Category="Station")
     FGuid StationId;
+
+    bool Serialize(FArchive& Ar);
+    void UpgradeTrackDistance(float SplineLength);
+
+    // 旧属性名用于读取带标签的关卡和存档。没有宿主时暂存，转换后重置为 -1。
+    UPROPERTY(SaveGame, NotReplicated)
+    float Position = -1.f;
+};
+
+template<>
+struct TStructOpsTypeTraits<FRailwayStation> : TStructOpsTypeTraitsBase2<FRailwayStation>
+{
+    enum { WithSerializer = true };
 };
 
 UENUM(BlueprintType)
@@ -96,8 +109,12 @@ struct RAILWAY_API FRailwayStationRef
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, SaveGame, Category="Station")
     FGuid HostTrackId;
 
-    /** 编制站次时的弧长比例，只用于检查停车位置是否已改变。 */
+    /** 编制站次时站点相对宿主首点的厘米数；-1 表示尚待绑定的旧引用。 */
     UPROPERTY(SaveGame)
+    double PlannedTrackDistance = -1;
+
+    // 仅用于将缺少 PlannedTrackDistance 的旧站次按其宿主长度升级。
+    UPROPERTY(SaveGame, NotReplicated)
     float PlannedPosition = 0.f;
 
     /** 发车时解析、网络传递的场景引用；存档只带身份。 */
@@ -123,13 +140,14 @@ struct RAILWAY_API FRailwayPlannedStop
     FRailwayStationRef Reference;
 
     // 没有来源字段的磁盘对象是旧快照。内存中新建的手工站次仍可直接使用 Station。
+    bool Serialize(FArchive& Ar);
     void PostSerialize(const FArchive& Ar);
 };
 
 template<>
 struct TStructOpsTypeTraits<FRailwayPlannedStop> : TStructOpsTypeTraitsBase2<FRailwayPlannedStop>
 {
-    enum { WithPostSerialize = true };
+    enum { WithSerializer = true, WithPostSerialize = true };
 };
 
 USTRUCT(BlueprintType)
@@ -174,6 +192,7 @@ struct RAILWAY_API FRailwayMoveState
     UPROPERTY(BlueprintReadOnly, Category="Railway")
     double Distance = 0;
 
+    /** 沿当前计划的有符号速度（cm/s）。客户端按此方向更新组件速度。 */
     UPROPERTY(BlueprintReadOnly, Category="Railway")
     float Speed = 0;
 

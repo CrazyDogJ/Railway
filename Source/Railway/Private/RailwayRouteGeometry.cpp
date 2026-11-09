@@ -12,9 +12,9 @@ double WrapDistance(double Distance, double Length)
     return Remainder < 0 ? Remainder + Length : Remainder;
 }
 
-double DistanceAtPosition(const USplineComponent& Spline, float Position)
+float DistanceOnSpline(const USplineComponent& Spline, double TrackDistance)
 {
-    return Spline.GetSplineLength() * Position;
+    return static_cast<float>(FMath::Clamp(TrackDistance, 0.0, static_cast<double>(Spline.GetSplineLength())));
 }
 
 static double NormalizeDistance(const USplineComponent& Spline, double Distance)

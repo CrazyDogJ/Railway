@@ -13,6 +13,7 @@ void ARailwayTrain::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     DOREPLIFETIME(ThisClass, TrainMoveState);
     DOREPLIFETIME(ThisClass, DriveMode);
     DOREPLIFETIME(ThisClass, DriveInput);
+    DOREPLIFETIME(ThisClass, BrakeInput);
 }
 
 void ARailwayTrain::PublishMoveState(bool bForce)
