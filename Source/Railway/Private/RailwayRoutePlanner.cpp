@@ -17,9 +17,6 @@ struct FTrackInterval
     double Exit;
 };
 
-constexpr double JunctionToleranceCm = 1.0;
-
-
 const TCHAR* CheckTrack(const ARailwayTrack* Track, const UWorld* World)
 {
     if (!IsValid(Track)) return TEXT("Missing track");
@@ -130,8 +127,7 @@ bool ResolveIntervals(const UWorld* World, const FRailwayWorldIndex& WorldIndex,
     for (int32 Index = 0; Index < Legs.Num(); ++Index)
     {
         const FRailwayLeg& Leg = Legs[Index];
-        if (const TCHAR* Error = CheckTrack(Leg.Track, World)) return RejectLeg(Index, Error, OutError);
-        if (const TCHAR* Error = CheckIdentities(WorldIndex, *Leg.Track)) return RejectLeg(Index, Error, OutError);
+        if (const TCHAR* Error = CheckRoutingTrack(Leg.Track, World, WorldIndex)) return RejectLeg(Index, Error, OutError);
         const double Length = Leg.Track->Spline->GetSplineLength();
         Intervals.Add(FTrackInterval{Leg.bReverse ? Length : 0, Leg.bReverse ? 0 : Length});
     }
@@ -164,10 +160,10 @@ bool CollectSectionStops(const FRailwayWorldIndex& WorldIndex, const FRailwaySec
     }, Error);
 }
 
-void SortStops(FRailwayPlan& Plan)
+void SortStops(TArray<FRailwayPlannedStop>& Stops)
 {
     // 同里程站点沿用原始顺序，以便通过 NextStop 区分已经服务的站次。
-    Plan.Stops.StableSort([](const FRailwayPlannedStop& A, const FRailwayPlannedStop& B)
+    Stops.StableSort([](const FRailwayPlannedStop& A, const FRailwayPlannedStop& B)
     {
         return A.Distance < B.Distance;
     });
@@ -182,7 +178,7 @@ const TCHAR* CheckSection(const FRailwaySection& Section, const UWorld* World, b
     const double Entry = Section.EntryDistance;
     const double Exit = Entry + (Section.Leg.bReverse ? -Section.TravelDistance : Section.TravelDistance);
     if (!FMath::IsFinite(Entry) || Entry < 0 || Entry > Length ||
-        !FMath::IsFinite(Section.TravelDistance) || Section.TravelDistance <= 0 ||
+        !FMath::IsFinite(Section.TravelDistance) || Section.TravelDistance < 0 ||
         Section.TravelDistance > Length + UE_SMALL_NUMBER ||
         (!Track->Spline->IsClosedLoop() && (Exit < -UE_SMALL_NUMBER || Exit > Length + UE_SMALL_NUMBER)))
         return TEXT("Invalid track geometry or section distance");
@@ -193,6 +189,65 @@ const TCHAR* CheckSection(const FRailwaySection& Section, const UWorld* World, b
     PreviousExit = Geometry::SampleTrack(Section.Leg, Exit).GetLocation();
     return nullptr;
 }
+}
+
+bool BuildPathStops(const FRailwayWorldIndex& Index, bool bStopAtIntermediateStations,
+    const FRailwayStationRef* DestinationStation, FRailwayPlan& Plan, FString& OutError)
+{
+    Plan.Stops.Reset();
+    Plan.bFinishAtLastStop = false;
+    if (!bStopAtIntermediateStations && !DestinationStation) return true;
+
+    double Length = 0;
+    TArray<FRailwayPlannedStop> AlongRoute;
+    for (int32 I = 0; I < Plan.Sections.Num(); ++I)
+    {
+        const FRailwaySection& Section = Plan.Sections[I];
+        if (bStopAtIntermediateStations && !CollectSectionStops(Index, Section, Length, AlongRoute, OutError))
+        {
+            OutError = FString::Printf(TEXT("route[%d]: %s"), I, *OutError);
+            return false;
+        }
+        Length += Section.TravelDistance;
+    }
+
+    SortStops(AlongRoute);
+    Plan.Stops.Reserve(AlongRoute.Num() + (DestinationStation ? 1 : 0));
+    for (FRailwayPlannedStop& Stop : AlongRoute)
+    {
+        if (Stop.Distance == 0) continue; // 从起点发车，不自动给出发站安排停留。
+        if (DestinationStation && FMath::IsNearlyEqual(Stop.Distance, Length, UE_SMALL_NUMBER) &&
+            Stations::SameSource(Stop.Reference, *DestinationStation)) continue;
+
+        // 同一站可能同时落在相邻区间的边界。只去掉同里程的同一身份，保留同名站及后续圈次。
+        bool bDuplicate = false;
+        for (int32 I = Plan.Stops.Num() - 1; I >= 0 &&
+            FMath::IsNearlyEqual(Plan.Stops[I].Distance, Stop.Distance, UE_SMALL_NUMBER); --I)
+        {
+            if (Stations::SameSource(Plan.Stops[I].Reference, Stop.Reference))
+            {
+                bDuplicate = true;
+                break;
+            }
+        }
+        if (!bDuplicate) Plan.Stops.Add(MoveTemp(Stop));
+    }
+
+    if (DestinationStation)
+    {
+        FRailwayPlannedStop& Terminal = Plan.Stops.AddDefaulted_GetRef();
+        Terminal.Distance = Length;
+        Terminal.Reference = *DestinationStation;
+    }
+    // 坐标终点位于最后一站之后时，还需继续行驶至几何终点。
+    Plan.bFinishAtLastStop = !Plan.Stops.IsEmpty() && Plan.Stops.Last().Distance == Length;
+    return true;
+}
+
+const TCHAR* CheckRoutingTrack(const ARailwayTrack* Track, const UWorld* World, const FRailwayWorldIndex& WorldIndex)
+{
+    if (const TCHAR* Error = CheckTrack(Track, World)) return Error;
+    return CheckIdentities(WorldIndex, *Track);
 }
 
 bool Build(UWorld* World, const TArray<FRailwayLeg>& Legs, TOptional<double> FirstEntry,
@@ -238,7 +293,7 @@ bool Build(UWorld* World, const TArray<FRailwayLeg>& Legs, TOptional<double> Fir
         Base += Travel;
     }
 
-    SortStops(Plan);
+    SortStops(Plan.Stops);
     OutPlan = MoveTemp(Plan);
     return true;
 }
@@ -398,7 +453,7 @@ bool Prepare(UWorld* World, FRailwayPlan Plan, double StartDistance, FRailwayPre
             }
         }
     }
-    SortStops(Plan);
+    SortStops(Plan.Stops);
     if (Plan.bFinishAtLastStop && (Plan.Stops.IsEmpty() || StartDistance > Plan.Stops.Last().Distance))
     {
         OutError = TEXT("Direct service requires a destination at or ahead of the start");

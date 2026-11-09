@@ -7,6 +7,7 @@
 #include "RailwayTrain.generated.h"
 
 class UStaticMeshComponent;
+class ARailwayStationMarker;
 struct FRailwayPreparedPlan;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRailwayArrival, FName, StationName);
@@ -133,6 +134,21 @@ public:
     // Builds a snapshot of the current geometry without resetting this train.
     UFUNCTION(BlueprintCallable, Category="Railway|Route")
     bool BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan& OutPlan, FString& OutError) const;
+
+    /** 按弧长寻找最短路线。勾选 Stop At Intermediate Stations 时将实际经过的站点加入停站表。 */
+    UFUNCTION(BlueprintCallable, Category="Railway|Pathfinding")
+    bool FindRoutePlan(const FRailwayTrackLocation& Start, const FRailwayTrackLocation& Destination,
+        FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations = false) const;
+
+    /** 前往场景站点。可选择沿途停站，指定目的站始终是最后一次停靠。 */
+    UFUNCTION(BlueprintCallable, Category="Railway|Pathfinding")
+    bool FindRoutePlanToStation(const FRailwayTrackLocation& Start, ARailwayStationMarker* DestinationStation,
+        FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations = false) const;
+
+    /** 前往 Track.Stations 中指定 ID 的站点，可选择沿途停站。 */
+    UFUNCTION(BlueprintCallable, Category="Railway|Pathfinding")
+    bool FindRoutePlanToTrackStation(const FRailwayTrackLocation& Start, ARailwayTrack* DestinationTrack, FGuid StationId,
+        FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations = false) const;
 
     // A rejected replacement leaves the current run intact. Exact-start stops remain pending.
     UFUNCTION(BlueprintCallable, Category="Railway|Route", BlueprintAuthorityOnly)

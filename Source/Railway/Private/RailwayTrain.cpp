@@ -9,6 +9,7 @@
 #include "Railway.h"
 #include "RailwayRouteGeometry.h"
 #include "RailwayRoutePlanner.h"
+#include "RailwayPathfinding.h"
 #include "RailwayTrack.h"
 #include "RailwayTrackPlacement.h"
 #include "RailwayWorldIndex.h"
@@ -163,6 +164,32 @@ bool ARailwayTrain::BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan
     return Railway::Routing::Build(GetWorld(), Legs, TOptional<double>(), OutPlan, OutError);
 }
 
+bool ARailwayTrain::FindRoutePlan(const FRailwayTrackLocation& Start, const FRailwayTrackLocation& Destination,
+    FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations) const
+{
+    return Railway::Routing::FindPath(GetWorld(), Start, Destination, bStopAtIntermediateStations, OutPlan, OutError);
+}
+
+bool ARailwayTrain::FindRoutePlanToStation(const FRailwayTrackLocation& Start, ARailwayStationMarker* DestinationStation,
+    FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations) const
+{
+    if (!IsValid(DestinationStation) || DestinationStation->GetWorld() != GetWorld())
+    {
+        OutPlan = FRailwayPlan();
+        OutError = TEXT("Select a destination station in this world");
+        return false;
+    }
+    return Railway::Routing::FindPathToStation(GetWorld(), Start, DestinationStation->HostTrack,
+        ERailwayStationSource::Marker, DestinationStation->RailwayId, bStopAtIntermediateStations, OutPlan, OutError);
+}
+
+bool ARailwayTrain::FindRoutePlanToTrackStation(const FRailwayTrackLocation& Start, ARailwayTrack* DestinationTrack,
+    FGuid StationId, FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations) const
+{
+    return Railway::Routing::FindPathToStation(GetWorld(), Start, DestinationTrack,
+        ERailwayStationSource::TrackStation, StationId, bStopAtIntermediateStations, OutPlan, OutError);
+}
+
 bool ARailwayTrain::StartPreparedRoute(const FRailwayPlan& Plan, double StartDistance, FString& OutError)
 {
     if (!HasAuthority())
@@ -174,8 +201,10 @@ bool ARailwayTrain::StartPreparedRoute(const FRailwayPlan& Plan, double StartDis
     if (!Railway::Routing::Prepare(GetWorld(), Plan, StartDistance, Prepared, OutError)) return false;
     // 严格小于起点的站才算跳过，恰好在起点的多个站仍按顺序服务。
     const int32 StopCursor = Algo::LowerBoundBy(Prepared.Plan.Stops, StartDistance, &FRailwayPlannedStop::Distance);
+    const bool bAlreadyAtDestination = Prepared.SectionEnds.Last() == 0.0 && Prepared.Plan.Stops.IsEmpty();
     ResetMotion();
-    ActivatePlan(MoveTemp(Prepared), StartDistance, StopCursor, ERailwayState::Running);
+    ActivatePlan(MoveTemp(Prepared), StartDistance, StopCursor,
+        bAlreadyAtDestination ? ERailwayState::Finished : ERailwayState::Running);
     return true;
 }
 

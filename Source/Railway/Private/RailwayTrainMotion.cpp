@@ -142,7 +142,7 @@ void ARailwayTrain::Step(double DeltaSeconds)
 
     // 换向先按实际运动方向减速至零，再在下一子步反向起步，车身始终按路线朝向采样。
     const bool bReverseFromRest = RequestedSpeed < 0.0 || (RequestedSpeed == 0.0 && bManual && DriveInput < 0.f);
-    const bool bBacking = Speed < 0.f || (Speed == 0.f && bReverseFromRest);
+    const bool bBacking = GetRouteLength() > 0.0 && (Speed < 0.f || (Speed == 0.f && bReverseFromRest));
     const double Direction = bBacking ? -1.0 : 1.0;
     double Target = 0.0;
     if (!bBacking)

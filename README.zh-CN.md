@@ -17,6 +17,22 @@
 - **挪站或换线**。选 Station，直接拖动或换 Host Track。选择新轨道时从当前位置投影到最近点。轨道折返或自交附近可以用 Track Distance 精确选定。取消 Host Track 可解除附着。
 - **运行规则**。Start Route 在发车时读取行程与当前已加载的站点，跨段计算制动距离，只停靠实际经过的轨道区间。运行中改动线路后，重新调用 Start Route 会从起点重建并发车。行程末端停车；有些站停时间为零时，仍会触发到站事件。
 
+## 用 A* 前往轨道中段或站点
+
+在 Railway Train 蓝图中，用 **Make Railway Track Location** 设置起点 Track 和 Track Distance（从样条首点起算的厘米数），再选目标。
+
+| 目标 | 蓝图节点 | 到达后的行为 |
+| --- | --- | --- |
+| 任意轨道位置 | **Find Route Plan**，传入起点和目标 Track Location | 在目标里程制动至零并进入 Finished。 |
+| 场景站点 | **Find Route Plan To Station**，传入起点和 Railway Station Actor | 在目标站触发到站，按该站当前的停留时间停靠，再进入 Finished。 |
+| 轨道内嵌站点 | **Find Route Plan To Track Station**，传入起点、目标轨道和该行的 Station ID | 按站点身份停靠，支持同名站。 |
+
+例如，从 Main 的 600 cm 前往 Spur 的 350 cm，可把这两个位置传给 **Find Route Plan**。成功后在服务端调用 **Start Prepared Route**，传入 Out Plan 并将 Start Distance 设为 **0**。新计划的累计里程从所选起点开始。列车在 Automatic 模式下自行发车；仅调用寻路节点不会移动列车。起终点重合时返回零里程计划，站点目标仍执行停靠。
+
+三个寻路节点都有 **Stop At Intermediate Stations** 开关，默认关闭。勾选后，Out Plan 的 **Stops** 会按行驶顺序列出经过的场景站点和轨道内嵌站点。出发位置的站点会跳过；若目的站就是出发站，则仍停靠一次。指定的目的站始终排在最后，同一站次不会重复添加。目标为普通轨道位置时，列车停完沿途各站后会继续开到该位置。
+
+搜索以样条弧长为成本，可双向行驶，也会比较闭环的两侧。只有已加载轨道之间通过同一 Junction 或其 Host Track 正确吸附的连接才能换轨，空间交叉本身不构成连接。轨道未连接或端点里程越界时，节点返回 false，可从 Out Error 读取原因。
+
 ## 闭合轨道
 
 选中 Railway Track 的 Spline 组件，在 Details 勾选 **Closed Loop**，引擎会把最后一个控制点连回第一个控制点。列车 Route 只填这条轨道时，从第一个点出发，跑完一圈后停车。勾选 **Reverse** 可反向绕行。连续填写同一条闭合轨道并保持相同方向，可指定多圈行程，圈间按站点配置停靠。

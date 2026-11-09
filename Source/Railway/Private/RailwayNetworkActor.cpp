@@ -5,6 +5,7 @@
 ARailwayNetworkActor::ARailwayNetworkActor()
 {
     bReplicates = true;
+    bIsSpatiallyLoaded = false;
 }
 
 void ARailwayNetworkActor::InitializeId()

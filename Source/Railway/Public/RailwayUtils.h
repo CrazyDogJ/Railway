@@ -7,6 +7,19 @@
 class ARailwayTrack;
 class ARailwayNetworkActor;
 
+/** 寻路端点。TrackDistance 从样条首点沿原生方向量起，单位 cm。 */
+USTRUCT(BlueprintType)
+struct RAILWAY_API FRailwayTrackLocation
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Railway")
+    TObjectPtr<ARailwayTrack> Track;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Railway", meta=(ClampMin="0", Units="cm"))
+    double TrackDistance = 0;
+};
+
 /** 一个有方向的轨道引用，允许在同一路线中多次经过同一轨道。 */
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwayLeg
@@ -34,7 +47,7 @@ struct RAILWAY_API FRailwaySection
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
 	double EntryDistance = 0;
 
-	/** 沿 Leg 指定方向行驶的正长度，单位 cm。 */
+	/** 沿 Leg 指定方向的行驶长度（cm）。零长度区间记录恰好位于换轨点的端点姿态。 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
 	double TravelDistance = 0;
 

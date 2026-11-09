@@ -12,6 +12,7 @@ class FRailwayWorldIndex
 public:
     explicit FRailwayWorldIndex(UWorld* World);
     ARailwayNetworkActor* Find(const FGuid& Id) const;
+    TArray<ARailwayTrack*> GetTracks() const;
     bool BindStop(FRailwayPlannedStop& Stop, FString& Error) const;
 
     /** 枚举同轨道上可使用的世界站点。重号会导致报错，避免把存档绑定到任意一个对象。 */

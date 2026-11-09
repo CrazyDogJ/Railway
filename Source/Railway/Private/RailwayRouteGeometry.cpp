@@ -60,9 +60,9 @@ bool SamplePlan(const FRailwayPlan& Plan, double Distance, int32& SectionIndex, 
     for (int32 Index = 0; Index < Plan.Sections.Num(); ++Index)
     {
         const FRailwaySection& Section = Plan.Sections[Index];
-        if (!FMath::IsFinite(Section.TravelDistance) || Section.TravelDistance <= 0) return false;
+        if (!FMath::IsFinite(Section.TravelDistance) || Section.TravelDistance < 0) return false;
         const double End = Start + Section.TravelDistance;
-        if (Distance < End || (Index == Plan.Sections.Num() - 1 && Distance == End))
+        if ((Index == 0 && Distance == 0) || Distance < End || (Index == Plan.Sections.Num() - 1 && Distance == End))
         {
             if (!LocateInSection(Plan, Index, Distance - Start, SectionIndex, TrackDistance)) return false;
             Pose = DirectedPose(Section.Leg, TrackDistance);
@@ -80,7 +80,8 @@ bool Locate(const FRailwayPlan& Plan, const TArray<double>& SectionEnds, double 
     if (SectionEnds.IsEmpty() || SectionEnds.Num() != Plan.Sections.Num() ||
         !FMath::IsFinite(Distance) || Distance < 0 || Distance > SectionEnds.Last()) return false;
 
-    const int32 Index = FMath::Min(Algo::UpperBound(SectionEnds, Distance), SectionEnds.Num() - 1);
+    // 起点和终点可以恰好位于岔口，此时首尾零长度区间指定采样的轨道。
+    const int32 Index = Distance == 0 ? 0 : FMath::Min(Algo::UpperBound(SectionEnds, Distance), SectionEnds.Num() - 1);
     const double Start = Index == 0 ? 0.0 : SectionEnds[Index - 1];
     return LocateInSection(Plan, Index, Distance - Start, SectionIndex, TrackDistance);
 }

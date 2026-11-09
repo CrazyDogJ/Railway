@@ -34,6 +34,15 @@ ARailwayNetworkActor* FRailwayWorldIndex::Find(const FGuid& Id) const
     return Actors.FindRef(Id);
 }
 
+TArray<ARailwayTrack*> FRailwayWorldIndex::GetTracks() const
+{
+    TArray<ARailwayTrack*> Tracks;
+    for (const auto& Pair : Actors)
+        if (auto* Track = Cast<ARailwayTrack>(Pair.Value)) Tracks.Add(Track);
+    Tracks.Sort([](const ARailwayTrack& A, const ARailwayTrack& B) { return A.RailwayId < B.RailwayId; });
+    return Tracks;
+}
+
 namespace Railway::Stations
 {
 bool SameSource(const FRailwayStationRef& A, const FRailwayStationRef& B)
