@@ -57,3 +57,23 @@ void ARailwayDataActor::ApplyWorldOffset(const FVector& Offset, bool bWorldShift
     for (FRailwayBakedTrack& Track : Network.Tracks) Track.SplineToWorld.AddToTranslation(Offset);
     for (FVector& Node : Network.Nodes) Node += Offset;
 }
+
+bool FRailwayNetworkData::ResolvePoint(const FRailwayRoutePoint& Point, FRailwayTrackLocation& Location, int32& StationIndex) const
+{
+    Location = {};
+    StationIndex = INDEX_NONE;
+    if (const int32* Station = StationById.Find(Point.Source.Id))
+    {
+        const FRailwayBakedStation& Row = Stations[*Station];
+        Location = {Edges[Row.EdgeIndex].TrackIndex, Row.Definition.TrackDistance};
+        StationIndex = *Station;
+        return true;
+    }
+    if (const int32* Track = TrackById.Find(Point.Source.Id))
+    {
+        if (!FMath::IsFinite(Point.TrackDistance) || Point.TrackDistance < 0 || Point.TrackDistance > Tracks[*Track].Length()) return false;
+        Location = {*Track, Point.TrackDistance};
+        return true;
+    }
+    return false;
+}

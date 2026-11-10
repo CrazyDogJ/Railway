@@ -8,6 +8,7 @@
 #endif
 #if WITH_EDITOR
 #include "Engine/World.h"
+#include "UObject/UnrealType.h"
 #endif
 
 namespace Railway::Placement
@@ -136,6 +137,17 @@ ARailwayTrack::ARailwayTrack()
 }
 
 #if WITH_EDITOR
+void ARailwayTrack::PostEditChangeChainProperty(FPropertyChangedChainEvent& Event)
+{
+    if (Event.Property == FindFProperty<FArrayProperty>(ARailwayTrack::StaticClass(), GET_MEMBER_NAME_CHECKED(ARailwayTrack, Stations)) &&
+        (Event.ChangeType == EPropertyChangeType::Duplicate || Event.ChangeType == EPropertyChangeType::ArrayAdd))
+    {
+        const int32 Row = Event.GetArrayIndex(TEXT("Stations"));
+        if (Stations.IsValidIndex(Row)) Stations[Row].AuthoringId = FGuid::NewGuid();
+    }
+    Super::PostEditChangeChainProperty(Event);
+}
+
 void ARailwayTrack::Tick(float DeltaSeconds)
 {
     Super::Tick(DeltaSeconds);

@@ -17,6 +17,8 @@ struct FRailwayPreparedPlan
 namespace Railway::Routing
 {
     inline constexpr double JunctionToleranceCm = 1.0;
+    bool AppendTrackPass(const FRailwayNetworkData& Data, int32 TrackIndex, bool bReverse,
+        double Entry, double Exit, bool bPreferIncoming, FRailwayPlan& Plan, FString& Error);
     void BuildStops(const FRailwayNetworkData& Data, FRailwayPlan& Plan, bool bIntermediate, int32 Destination);
     bool Build(const ARailwayDataActor* Data, const TArray<FRailwayLeg>& Legs, TOptional<double> FirstEntry,
         FRailwayPlan& OutPlan, FString& Error);

@@ -1,6 +1,7 @@
 #include "RailwayTrain.h"
 
 #include "Railway.h"
+#include "RailwayRouteBookmark.h"
 #include "RailwayRoutePlanner.h"
 #include "UObject/Class.h"
 
@@ -13,16 +14,16 @@ bool IsValidProgress(const FRailwayTrainSaveGame& Saved, const FRailwayPreparedP
     const int32 Cursor = Saved.NextStop;
     // 倒车可退到已服务站次之前，游标仍指向下一待服务站。
     if (Cursor < 0 || Cursor > Stops.Num() ||
-        (Stops.IsValidIndex(Cursor) && Stops[Cursor].Distance < Saved.Distance) ||
+        (Stops.IsValidIndex(Cursor) && Stops[Cursor].Distance < Prepared.StartDistance) ||
         !FMath::IsFinite(Saved.Speed) || !FMath::IsFinite(Saved.Wait) || Saved.Wait < 0)
         return false;
 
     if (Saved.State == ERailwayState::Dwelling)
-        return Cursor > 0 && Stops[Cursor - 1].Distance == Saved.Distance;
+        return Cursor > 0 && Stops[Cursor - 1].Distance == Prepared.StartDistance;
     if (Saved.State == ERailwayState::Finished)
     {
         const double Terminus = Prepared.Plan.bFinishAtLastStop ? Stops.Last().Distance : Prepared.SectionEnds.Last();
-        return Saved.Distance == Terminus && Cursor == Stops.Num();
+        return Prepared.StartDistance == Terminus && Cursor == Stops.Num();
     }
     return true;
 }
@@ -37,6 +38,9 @@ FRailwayTrainSaveGame ARailwayTrain::GetSaveGameData() const
     Saved.DriveMode = DriveMode;
     Saved.RailwayPlan = ActivePlan;
     Saved.RailwayPlan.NetworkRevision = 0;
+    if (const ARailwayDataActor* Data = GetRailwayData(); Data && Data->Network.NetworkId.IsValid() && !ActivePlan.Sections.IsEmpty() &&
+        !Railway::Persistence::Capture(*Data, ActivePlan, SectionEnds, Distance, Saved.Bookmark))
+        UE_LOG(LogRailway, Warning, TEXT("%s: could only save the current build's indexed plan"), *GetName());
     Saved.Distance = Distance;
     Saved.State = State;
     Saved.NextStop = NextStop;
@@ -60,11 +64,53 @@ void ARailwayTrain::LoadSaveGameData(FRailwayTrainSaveGame InSaveGame)
 bool ARailwayTrain::TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FString& OutError)
 {
     OutError.Reset();
+    LastRestoreResult = ERailwayRestoreResult::Failed;
     if (!HasAuthority() || !Save.bValid)
     {
         OutError = TEXT("A valid save and an authoritative train are required");
         return false;
     }
+    if (RestoreSavedService(Save, OutError)) return true;
+    const FString RestoreError = OutError;
+    FString ParkError;
+    if (!ParkAtRecoveryPoint(Save.DriveMode, ParkError))
+    {
+        OutError = RestoreError + TEXT(". ") + ParkError;
+        return false;
+    }
+    UE_LOG(LogRailway, Warning, TEXT("%s: parked at recovery point: %s"), *GetName(), *RestoreError);
+    OutError.Reset();
+    return true;
+}
+
+bool ARailwayTrain::ParkAtRecoveryPoint(ERailwayDriveMode Mode, FString& Error)
+{
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (!Data || Data->Network.Edges.IsEmpty())
+    {
+        Error = TEXT("No baked railway point is available for recovery");
+        return false;
+    }
+    FRailwayTrackLocation Location;
+    int32 StationIndex;
+    if (!Data->Network.ResolvePoint(RecoveryPoint, Location, StationIndex))
+        Location = {Data->Network.Edges[0].TrackIndex, Data->Network.Edges[0].StartDistance};
+
+    FRailwayPlan Parked;
+    Parked.BuildId = Data->Network.BuildId;
+    if (!Railway::Routing::AppendTrackPass(Data->Network, Location.TrackIndex, false, Location.TrackDistance,
+        Location.TrackDistance, false, Parked, Error)) return false;
+    FRailwayPreparedPlan Prepared;
+    if (!Railway::Routing::Prepare(Data, MoveTemp(Parked), 0, Prepared, Error)) return false;
+    ResetMotion();
+    DriveMode = Mode == ERailwayDriveMode::Manual ? Mode : ERailwayDriveMode::Automatic;
+    LastRestoreResult = ERailwayRestoreResult::ParkedAtFallback;
+    ActivatePlan(MoveTemp(Prepared), 0, ERailwayState::Idle);
+    return true;
+}
+
+bool ARailwayTrain::RestoreSavedService(const FRailwayTrainSaveGame& Save, FString& OutError)
+{
     if (!StaticEnum<ERailwayState>()->IsValidEnumValue(static_cast<int64>(Save.State)) ||
         (Save.DriveMode != ERailwayDriveMode::Automatic && Save.DriveMode != ERailwayDriveMode::Manual))
     {
@@ -75,12 +121,27 @@ bool ARailwayTrain::TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FStri
         (Save.State == ERailwayState::Idle || Save.State == ERailwayState::InvalidRoute))
     {
         DriveMode = Save.DriveMode;
+        LastRestoreResult = ERailwayRestoreResult::Restored;
         ResetPlan(Save.State);
         return true;
     }
 
     FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetRailwayData(), Save.RailwayPlan, Save.Distance, Prepared, OutError)) return false;
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (!Data)
+    {
+        OutError = TEXT("The train's railway data is unavailable");
+        return false;
+    }
+    const bool bRemap = Data->Network.BuildId != Save.RailwayPlan.BuildId;
+    if (bRemap)
+    {
+        FRailwayPlan Plan;
+        double RemappedDistance = 0;
+        if (!Railway::Persistence::Remap(*Data, Save, Plan, RemappedDistance, OutError) ||
+            !Railway::Routing::Prepare(Data, MoveTemp(Plan), RemappedDistance, Prepared, OutError)) return false;
+    }
+    else if (!Railway::Routing::Prepare(Data, Save.RailwayPlan, Save.Distance, Prepared, OutError)) return false;
     if (!IsValidProgress(Save, Prepared))
     {
         OutError = TEXT("Invalid train progress in save");
@@ -112,6 +173,7 @@ bool ARailwayTrain::TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FStri
         Wait = Remaining;
         bPreLeaveSent = Save.bPreLeaveSent;
     }
+    LastRestoreResult = bRemap ? ERailwayRestoreResult::Remapped : ERailwayRestoreResult::Restored;
     ActivatePlan(MoveTemp(Prepared), Save.NextStop, Save.State);
     return true;
 }

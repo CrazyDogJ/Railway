@@ -57,12 +57,22 @@ ARailwayDataActor* ARailwayTrain::GetRailwayData() const
 
 bool ARailwayTrain::GetPreviewLocation_Implementation(FRailwayLeg& PreviewLeg, double& TrackDistance) const
 {
-    PreviewLeg = Route.IsEmpty() ? FRailwayLeg() : Route[0];
+    PreviewLeg = {};
     TrackDistance = 0;
     const ARailwayDataActor* Data = GetRailwayData();
-    if (!Data || !Data->Network.Edges.IsValidIndex(PreviewLeg.EdgeIndex)) return false;
-    TrackDistance = Data->Network.Edges[PreviewLeg.EdgeIndex].StartDistance;
-    return true;
+    if (!Data || !Data->Network.BuildId.IsValid()) return false;
+    if (PreviewBuild != Data->Network.BuildId ||
+        !FRailwayRouteSettings::StaticStruct()->CompareScriptStruct(&PreviewSettings, &Route, 0))
+    {
+        PreviewBuild = Data->Network.BuildId;
+        PreviewSettings = Route;
+        FRailwayPlan Plan;
+        FString Error;
+        PreviewSection = CompileRouteSettings(Route, Plan, Error) ? Plan.Sections[0] : FRailwaySection();
+    }
+    PreviewLeg = PreviewSection.Leg;
+    TrackDistance = PreviewSection.EntryDistance;
+    return Data->Network.Edges.IsValidIndex(PreviewLeg.EdgeIndex);
 }
 
 bool ARailwayTrain::UpdatePreviewRotation_Implementation()
@@ -178,7 +188,7 @@ bool ARailwayTrain::StartRoute()
     if (!HasAuthority()) return false;
     FRailwayPlan Plan;
     FString Error;
-    if (!BuildRoutePlan(Route, Plan, Error) || !RestartPreparedRouteAtDistance(Plan, 0, Error)) return FailRoute(Error);
+    if (!CompileRouteSettings(Route, Plan, Error) || !RestartPreparedRouteAtDistance(Plan, 0, Error)) return FailRoute(Error);
     return true;
 }
 
@@ -302,7 +312,18 @@ bool ARailwayTrain::ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FSt
     FRailwayPreparedPlan Prepared;
     if (!Railway::Routing::Prepare(GetRailwayData(), MoveTemp(RemainingPlan), 0, Prepared, OutError) ||
         !ContinuePreparedPlan(MoveTemp(Prepared), true, OutError)) return false;
-    Route = NewLegs;
+    Route = {};
+    Route.Mode = ERailwayRouteMode::OrderedTracks;
+    for (const FRailwayLeg& NewLeg : NewLegs)
+    {
+        const FRailwayEdge& E = Data->Network.Edges[NewLeg.EdgeIndex];
+        const FGuid Id = Data->Network.Tracks[E.TrackIndex].Id;
+        if (!Route.Tracks.IsEmpty() && Route.Tracks.Last().Track.Id == Id &&
+            Route.Tracks.Last().bReverse == E.IsReverse() && Route.Tracks.Last().ExitDistance == E.StartDistance)
+            Route.Tracks.Last().ExitDistance = E.EndDistance;
+        else
+            Route.Tracks.Add({{Id}, E.IsReverse(), E.StartDistance, E.EndDistance});
+    }
     return true;
 }
 

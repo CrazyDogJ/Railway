@@ -58,6 +58,12 @@ struct RAILWAY_API FRailwayStation
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Station")
     FInstancedStruct CustomData;
+
+#if WITH_EDITORONLY_DATA
+    /** Persistent key of an inline station row, scoped to its owning track. */
+    UPROPERTY()
+    FGuid AuthoringId;
+#endif
 };
 
 USTRUCT(BlueprintType)

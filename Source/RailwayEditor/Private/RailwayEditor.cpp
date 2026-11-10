@@ -1,4 +1,6 @@
 #include "RailwayDataBuilder.h"
+#include "RailwaySourceRefCustomization.h"
+#include "PropertyEditorModule.h"
 
 #include "Editor.h"
 #include "Engine/World.h"
@@ -13,11 +15,20 @@ class FRailwayEditorModule final : public IModuleInterface
 {
     virtual void StartupModule() override
     {
+        auto& Properties = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+        Properties.RegisterCustomPropertyTypeLayout("RailwaySourceRef",
+            FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FRailwaySourceRefCustomization::MakeInstance));
+        Properties.NotifyCustomizationModuleChanged();
         UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FRailwayEditorModule::RegisterMenus));
     }
 
     virtual void ShutdownModule() override
     {
+        if (auto* Properties = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
+        {
+            Properties->UnregisterCustomPropertyTypeLayout("RailwaySourceRef");
+            Properties->NotifyCustomizationModuleChanged();
+        }
         UToolMenus::UnRegisterStartupCallback(this);
         UToolMenus::UnregisterOwner(this);
     }

@@ -3,6 +3,7 @@
 #include "Components/SplineComponent.h"
 #include "GameFramework/Actor.h"
 #include "RailwayUtils.h"
+#include "RailwayRouteSettings.h"
 #include "RailwayDataActor.generated.h"
 
 USTRUCT(BlueprintType)
@@ -12,6 +13,9 @@ struct RAILWAY_API FRailwayBakedTrack
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Railway")
     FName Name;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Railway")
+    FGuid Id;
 
     UPROPERTY()
     FSplineCurves Curves;
@@ -82,6 +86,9 @@ struct RAILWAY_API FRailwayBakedStation
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Railway")
     FRailwayStation Definition;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Railway")
+    FGuid Id;
 };
 
 USTRUCT(BlueprintType)
@@ -111,6 +118,20 @@ struct RAILWAY_API FRailwayNetworkData
     UPROPERTY()
     FGuid BuildId;
 
+    /** Source IDs are only resolved when translating settings or restoring saves. */
+    UPROPERTY()
+    TMap<FGuid, int32> TrackById;
+
+    UPROPERTY()
+    TMap<FGuid, int32> StationById;
+
+    UPROPERTY()
+    TMap<int32, FGuid> JunctionByNode;
+
+    UPROPERTY()
+    FGuid NetworkId;
+
+    bool ResolvePoint(const FRailwayRoutePoint& Point, FRailwayTrackLocation& Location, int32& StationIndex) const;
     bool CanFollow(int32 From, int32 To) const;
 };
 

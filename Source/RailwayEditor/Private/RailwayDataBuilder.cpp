@@ -113,6 +113,49 @@ bool BakeSpline(const ARailwayTrack& Source, FRailwayBakedTrack& Track)
     return true;
 }
 
+// Keep the index revision when every route can still be sampled and stopped at the
+// same distances. In particular, editing dwell time or CustomData does not invalidate saves.
+bool SameIndexLayout(const FRailwayNetworkData& Old, const FRailwayNetworkData& New)
+{
+    if (!Old.BuildId.IsValid() || Old.Tracks.Num() != New.Tracks.Num() || Old.Edges.Num() != New.Edges.Num() ||
+        Old.Stations.Num() != New.Stations.Num() || Old.Nodes != New.Nodes || Old.Successors != New.Successors) return false;
+    const bool bLegacy = !Old.NetworkId.IsValid();
+    if (!bLegacy && Old.NetworkId != New.NetworkId) return false;
+    TSet<FName> LegacyTrackNames;
+    for (int32 I = 0; I < Old.Tracks.Num(); ++I)
+    {
+        const FRailwayBakedTrack& A = Old.Tracks[I];
+        const FRailwayBakedTrack& B = New.Tracks[I];
+        if (bLegacy)
+        {
+            // Index-only bakes have no identity. Accept an unchanged, unambiguous track layout.
+            if (A.Name != B.Name || LegacyTrackNames.Contains(A.Name)) return false;
+            LegacyTrackNames.Add(A.Name);
+        }
+        else if (A.Id != B.Id) return false;
+        if (A.FirstEdge != B.FirstEdge || A.NumEdges != B.NumEdges || A.FirstStation != B.FirstStation ||
+            A.NumStations != B.NumStations || A.DefaultUp != B.DefaultUp || !A.SplineToWorld.Equals(B.SplineToWorld, 0) ||
+            A.Curves != B.Curves || A.Curves.ReparamTable != B.Curves.ReparamTable) return false;
+    }
+    for (int32 I = 0; I < Old.Edges.Num(); ++I)
+        if (!FRailwayEdge::StaticStruct()->CompareScriptStruct(&Old.Edges[I], &New.Edges[I], 0)) return false;
+    TSet<TPair<int32, FName>> LegacyStations;
+    for (int32 I = 0; I < Old.Stations.Num(); ++I)
+    {
+        const auto& A = Old.Stations[I];
+        const auto& B = New.Stations[I];
+        if (A.EdgeIndex != B.EdgeIndex || A.Definition.TrackDistance != B.Definition.TrackDistance) return false;
+        if (bLegacy)
+        {
+            const TPair<int32, FName> Key(Old.Edges[A.EdgeIndex].TrackIndex, A.Definition.Name);
+            if (A.Definition.Name != B.Definition.Name || LegacyStations.Contains(Key)) return false;
+            LegacyStations.Add(Key);
+        }
+        else if (A.Id != B.Id) return false;
+    }
+    return true;
+}
+
 struct FBuilder
 {
     FRailwayNetworkData Data;
@@ -122,7 +165,9 @@ struct FBuilder
     TMap<const ARailwayTrack*, int32> TrackIndices;
     TMap<const ARailwayJunction*, int32> JunctionNodes;
     TArray<TMap<double, int32>> Cuts;
-    TArray<TArray<FRailwayStation>> StationRows;
+    TArray<TArray<FRailwayBakedStation>> StationRows;
+    struct FNewRowId { ARailwayTrack* Track; int32 Row; FGuid Id; };
+    TArray<FNewRowId> NewRowIds;
     FString Error;
 
     bool Fail(const AActor& Source, const TCHAR* Reason)
@@ -160,12 +205,31 @@ struct FBuilder
             TrackIndices.Add(Tracks[I], I);
             if (!BakeSpline(*Tracks[I], Data.Tracks.AddDefaulted_GetRef()))
                 return Fail(*Tracks[I], TEXT("Spline must have finite geometry and positive-length segments"));
-            StationRows[I] = Tracks[I]->Stations;
+            const FGuid TrackId = Tracks[I]->GetActorGuid();
+            if (!TrackId.IsValid() || Data.TrackById.Contains(TrackId))
+                return Fail(*Tracks[I], TEXT("Missing or duplicate track GUID"));
+            Data.Tracks[I].Id = TrackId;
+            Data.TrackById.Add(TrackId, I);
+            TSet<FGuid> RowIds;
+            for (int32 Row = 0; Row < Tracks[I]->Stations.Num(); ++Row)
+            {
+                const FRailwayStation& Definition = Tracks[I]->Stations[Row];
+                FGuid Id = Definition.AuthoringId;
+                if (!Id.IsValid())
+                {
+                    Id = FGuid::NewGuid();
+                    NewRowIds.Add({Tracks[I], Row, Id});
+                }
+                if (RowIds.Contains(Id)) return Fail(*Tracks[I], TEXT("Duplicate inline station ID; recreate the copied row"));
+                RowIds.Add(Id);
+                StationRows[I].Add({INDEX_NONE, Definition, FGuid::Combine(TrackId, Id)});
+            }
         }
         for (const ARailwayJunction* Junction : Junctions)
         {
             const int32 Node = Data.Nodes.Num();
             JunctionNodes.Add(Junction, Node);
+            Data.JunctionByNode.Add(Node, Junction->GetActorGuid());
             if (Junction->HostTrack.IsNull()) Data.Nodes.Add(Junction->GetActorLocation());
             else
             {
@@ -250,25 +314,34 @@ struct FBuilder
         {
             const int32* Host = TrackIndices.Find(Marker->HostTrack.Get());
             if (!Host) return Fail(*Marker, TEXT("Select a host track in the current level"));
-            StationRows[*Host].Add(Marker->GetStationDefinition());
+            StationRows[*Host].Add({INDEX_NONE, Marker->GetStationDefinition(), Marker->GetActorGuid()});
         }
         for (int32 I = 0; I < Tracks.Num(); ++I)
         {
             FRailwayBakedTrack& Track = Data.Tracks[I];
             Track.FirstStation = Data.Stations.Num();
-            for (FRailwayStation& Row : StationRows[I])
+            for (FRailwayBakedStation& Station : StationRows[I])
             {
+                FRailwayStation& Row = Station.Definition;
                 if (!FMath::IsFinite(Row.TrackDistance) || !FMath::IsFinite(Row.DwellSeconds) || Row.DwellSeconds < 0)
                     return Fail(*Tracks[I], TEXT("Invalid station distance or dwell time"));
                 Row.TrackDistance = FMath::Clamp(Row.TrackDistance, 0.0, Track.Length());
                 if (Track.IsLoop() && Row.TrackDistance == Track.Length()) Row.TrackDistance = 0;
             }
-            StationRows[I].StableSort([](const FRailwayStation& A, const FRailwayStation& B) { return A.TrackDistance < B.TrackDistance; });
-            int32 Edge = Track.FirstEdge;
-            for (const FRailwayStation& Row : StationRows[I])
+            StationRows[I].StableSort([](const FRailwayBakedStation& A, const FRailwayBakedStation& B)
             {
+                return A.Definition.TrackDistance < B.Definition.TrackDistance;
+            });
+            int32 Edge = Track.FirstEdge;
+            for (FRailwayBakedStation& Station : StationRows[I])
+            {
+                const FRailwayStation& Row = Station.Definition;
                 while (Edge + 2 < Track.FirstEdge + Track.NumEdges && Row.TrackDistance >= Data.Edges[Edge].EndDistance) Edge += 2;
-                Data.Stations.Add({Edge, Row});
+                if (!Station.Id.IsValid() || Data.TrackById.Contains(Station.Id) || Data.StationById.Contains(Station.Id))
+                    return Fail(*Tracks[I], TEXT("Missing or duplicate station GUID"));
+                Station.EdgeIndex = Edge;
+                Data.StationById.Add(Station.Id, Data.Stations.Num());
+                Data.Stations.Add(MoveTemp(Station));
             }
             Track.NumStations = Data.Stations.Num() - Track.FirstStation;
         }
@@ -335,11 +408,18 @@ bool BuildData(ULevel& Level, FString& Message)
         }
         Target->SetActorLabel(TEXT("Railway Data"));
     }
+    for (const FBuilder::FNewRowId& New : Builder.NewRowIds)
+    {
+        New.Track->Modify();
+        New.Track->Stations[New.Row].AuthoringId = New.Id;
+        New.Track->MarkPackageDirty();
+    }
     Target->Modify();
-    Builder.Data.BuildId = FGuid::NewGuid();
+    Builder.Data.NetworkId = Target->GetActorGuid();
+    Builder.Data.BuildId = SameIndexLayout(Target->Network, Builder.Data) ? Target->Network.BuildId : FGuid::NewGuid();
     Target->Network = MoveTemp(Builder.Data);
     Target->MarkPackageDirty();
-    Message = FString::Printf(TEXT("Built %d tracks, %d directed edges and %d stations. Save the level."),
+    Message = FString::Printf(TEXT("Built %d tracks, %d directed edges and %d stations. Save the level and modified railway actors."),
         Target->Network.Tracks.Num(), Target->Network.Edges.Num(), Target->Network.Stations.Num());
     return true;
 }

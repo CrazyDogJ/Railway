@@ -79,6 +79,7 @@ class RAILWAY_API ARailwayTrack : public ARailwayNetworkActor
 public:
     ARailwayTrack();
 #if WITH_EDITOR
+    virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& Event) override;
     virtual bool ShouldTickIfViewportsOnly() const override { return true; }
     virtual void Tick(float DeltaSeconds) override;
 #endif

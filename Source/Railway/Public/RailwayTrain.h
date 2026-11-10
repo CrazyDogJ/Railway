@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "RailwayMoveBuffer.h"
+#include "RailwayRouteSettings.h"
 #include "RailwayTrainSaveGame.h"
 #include "RailwayTrain.generated.h"
 
@@ -40,9 +41,19 @@ public:
     UFUNCTION(BlueprintPure, Category="Railway")
     ARailwayDataActor* GetRailwayData() const;
 
-    /** 按行驶顺序排列的有向边索引。 */
+    /** 按站点或轨道点寻路，或按指定轨道与方向行驶。 */
     UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category="Railway")
-    TArray<FRailwayLeg> Route;
+    FRailwayRouteSettings Route;
+
+    UFUNCTION(BlueprintCallable, Category="Railway|Route")
+    bool CompileRouteSettings(const FRailwayRouteSettings& Settings, FRailwayPlan& OutPlan, FString& OutError) const;
+
+    /** 恢复失败时停放的位置。未设置或已移除时使用当前铁路网第一条轨道的起点。 */
+    UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category="Railway|Save Game")
+    FRailwayRoutePoint RecoveryPoint;
+
+    UPROPERTY(Transient, BlueprintReadOnly, Category="Railway|Save Game")
+    ERailwayRestoreResult LastRestoreResult = ERailwayRestoreResult::None;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Railway")
     TObjectPtr<UStaticMeshComponent> Body;
@@ -134,7 +145,7 @@ public:
     UFUNCTION(BlueprintPure, Category="Railway|Route")
     bool ResolvePlannedStop(const FRailwayPlannedStop& Stop, FRailwayStation& OutStation) const;
 
-    /** 提供失败原因，读档失败时保留现有行程。 */
+    /** 返回是否完成恢复或停放；LastRestoreResult 区分结果。 */
     UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Save Game")
     bool TryLoadSaveGameData(const FRailwayTrainSaveGame& Save, FString& OutError);
 
@@ -237,6 +248,9 @@ protected:
 
 private:
     mutable TWeakObjectPtr<ARailwayDataActor> CachedRailwayData;
+    mutable FGuid PreviewBuild;
+    mutable FRailwayRouteSettings PreviewSettings;
+    mutable FRailwaySection PreviewSection;
 
     UFUNCTION()
     void OnRep_TrainMoveState();
@@ -254,6 +268,8 @@ private:
     TArray<double> SectionEnds;
     bool bPreLeaveSent = false;
 
+    bool RestoreSavedService(const FRailwayTrainSaveGame& Save, FString& Error);
+    bool ParkAtRecoveryPoint(ERailwayDriveMode Mode, FString& Error);
     bool IsInService() const;
     FName GetStationForState(ERailwayState InState) const;
     bool RefreshDwell();

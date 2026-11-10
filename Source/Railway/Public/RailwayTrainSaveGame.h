@@ -6,6 +6,84 @@
 
 class ARailwayTrain;
 
+UENUM(BlueprintType)
+enum class ERailwayRestoreResult : uint8 { None, Restored, Remapped, ParkedAtFallback, Failed };
+
+UENUM()
+enum class ERailwayAnchorKind : uint8 { Distance, TrackStart, TrackEnd, Junction, Station };
+
+USTRUCT()
+struct FRailwaySavedAnchor
+{
+    GENERATED_BODY()
+
+    UPROPERTY(SaveGame)
+    ERailwayAnchorKind Kind = ERailwayAnchorKind::Distance;
+
+    UPROPERTY(SaveGame)
+    double Distance = 0;
+
+    UPROPERTY(SaveGame)
+    FGuid Source;
+};
+
+USTRUCT()
+struct FRailwaySavedPass
+{
+    GENERATED_BODY()
+
+    UPROPERTY(SaveGame)
+    FGuid Track;
+
+    UPROPERTY(SaveGame)
+    bool bReverse = false;
+
+    UPROPERTY(SaveGame)
+    FRailwaySavedAnchor Entry;
+
+    UPROPERTY(SaveGame)
+    FRailwaySavedAnchor Exit;
+
+    UPROPERTY(SaveGame)
+    bool bStartOnIncomingEdge = false;
+};
+
+USTRUCT()
+struct FRailwaySavedStop
+{
+    GENERATED_BODY()
+
+    UPROPERTY(SaveGame)
+    FGuid Station;
+
+    UPROPERTY(SaveGame)
+    int32 Pass = INDEX_NONE;
+
+    UPROPERTY(SaveGame)
+    bool bAtClosingSeam = false;
+};
+
+USTRUCT()
+struct FRailwayRouteBookmark
+{
+    GENERATED_BODY()
+
+    UPROPERTY(SaveGame)
+    FGuid Network;
+
+    UPROPERTY(SaveGame)
+    TArray<FRailwaySavedPass> Passes;
+
+    UPROPERTY(SaveGame)
+    TArray<FRailwaySavedStop> Stops;
+
+    UPROPERTY(SaveGame)
+    int32 OccupiedPass = INDEX_NONE;
+
+    UPROPERTY(SaveGame)
+    FRailwaySavedAnchor Position;
+};
+
 /** 持久化权威列车的行程与服务进度。姿态、段号和站名从计划与游标恢复。 */
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwayTrainSaveGame
@@ -15,7 +93,7 @@ struct RAILWAY_API FRailwayTrainSaveGame
     /** 兼容原有 C++ 入口，由列车负责采集可保存的运行状态。 */
     static FRailwayTrainSaveGame SaveTrain(const ARailwayTrain* Train);
 
-    /** 将记录交给目标列车恢复，计划或进度无效时保留原行程。 */
+    /** 将记录交给目标列车恢复，旧行程无法恢复时尝试停放在默认轨道点。 */
     void LoadTrain(ARailwayTrain* Train) const;
 
     UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
@@ -30,6 +108,9 @@ struct RAILWAY_API FRailwayTrainSaveGame
 
     UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
     FRailwayPlan RailwayPlan;
+
+    UPROPERTY(SaveGame)
+    FRailwayRouteBookmark Bookmark;
 
     UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
     double Distance = 0;
