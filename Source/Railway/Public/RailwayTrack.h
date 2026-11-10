@@ -31,6 +31,9 @@ public:
     virtual void Tick(float DeltaSeconds) override;
     virtual void PostEditMove(bool bFinished) override;
     virtual void PostEditChangeProperty(FPropertyChangedEvent& Event) override;
+protected:
+    virtual void ApplyAnchorPose(const FTransform& TrackPose);
+    virtual FVector GetAnchorProjectionLocation() const { return GetActorLocation(); }
 #endif
 #if WITH_EDITORONLY_DATA
 protected:

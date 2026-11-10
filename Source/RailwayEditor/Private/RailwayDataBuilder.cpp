@@ -4,6 +4,7 @@
 #include "Engine/World.h"
 #include "RailwayDataActor.h"
 #include "RailwayTrack.h"
+#include "RailwayTrackDecoration.h"
 #include "ScopedTransaction.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionActorDescInstance.h"
@@ -357,6 +358,7 @@ bool BuildData(ULevel& Level, FString& Message)
     if (!LoadSources(Level, Pins, Message)) return false;
 
     FBuilder Builder;
+    TArray<TWeakObjectPtr<ARailwayTrackDecoration>> Decorations;
     ARailwayDataActor* Target = nullptr;
     for (AActor* Actor : Level.Actors)
     {
@@ -364,6 +366,7 @@ bool BuildData(ULevel& Level, FString& Message)
         if (auto* Track = Cast<ARailwayTrack>(Actor)) Builder.Tracks.Add(Track);
         else if (auto* Junction = Cast<ARailwayJunction>(Actor)) Builder.Junctions.Add(Junction);
         else if (auto* Station = Cast<ARailwayStationMarker>(Actor)) Builder.Markers.Add(Station);
+        else if (auto* Decoration = Cast<ARailwayTrackDecoration>(Actor)) Decorations.Add(Decoration);
         else if (auto* DataActor = Cast<ARailwayDataActor>(Actor))
         {
             if (Target)
@@ -419,6 +422,9 @@ bool BuildData(ULevel& Level, FString& Message)
     Builder.Data.BuildId = SameIndexLayout(Target->Network, Builder.Data) ? Target->Network.BuildId : FGuid::NewGuid();
     Target->Network = MoveTemp(Builder.Data);
     Target->MarkPackageDirty();
+    // Partition references are still held here, so props in unloaded cells can also be placed.
+    for (const auto& Decoration : Decorations)
+        if (ARailwayTrackDecoration* Prop = Decoration.Get()) Prop->RefreshDecorationPlacement();
     Message = FString::Printf(TEXT("Built %d tracks, %d directed edges and %d stations. Save the level and modified railway actors."),
         Target->Network.Tracks.Num(), Target->Network.Edges.Num(), Target->Network.Stations.Num());
     return true;

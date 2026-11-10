@@ -18,7 +18,15 @@ void ARailwayTrain::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
 
 void ARailwayTrain::PublishMoveState(bool bForce)
 {
-    if (!HasAuthority() || GetNetMode() == NM_Standalone) return;
+    if (!HasAuthority()) return;
+    if (NotifiedPlanRevision != ActivePlan.NetworkRevision || NotifiedStop != NextStop || NotifiedState != State)
+    {
+        NotifiedPlanRevision = ActivePlan.NetworkRevision;
+        NotifiedStop = NextStop;
+        NotifiedState = State;
+        OnRailwayTimetableChanged.Broadcast();
+    }
+    if (GetNetMode() == NM_Standalone) return;
     const double Now = GetWorld()->GetTimeSeconds();
     const double DwellEnd = State == ERailwayState::Dwelling ? Now + Wait : 0;
     const bool bDwellEdited = State == ERailwayState::Dwelling &&
@@ -45,7 +53,9 @@ void ARailwayTrain::PublishMoveState(bool bForce)
 
 void ARailwayTrain::OnRep_ActivePlan()
 {
+    ++TimetableUpdateSerial;
     Railway::Geometry::BuildSectionEnds(ActivePlan, SectionEnds);
+    OnRailwayTimetableChanged.Broadcast();
 }
 
 void ARailwayTrain::OnRep_TrainMoveState()
@@ -76,6 +86,7 @@ void ARailwayTrain::TickClientPresentation()
         return;
     }
 
+    const bool bNewTimetable = PresentedPlanRevision != Sample.PlanRevision || NextStop != Sample.NextStop || State != Sample.State;
     MoveBuffer.MarkPresented(Sample.ServerTime);
     PresentedPlanRevision = Sample.PlanRevision;
     Leg = SectionIndex;
@@ -87,4 +98,5 @@ void ARailwayTrain::TickClientPresentation()
     CurrentStation = bDwelling ? Sample.StationName : NAME_None;
     UpdateVelocity();
     SetState(Sample.State);
+    if (bNewTimetable) OnRailwayTimetableChanged.Broadcast();
 }

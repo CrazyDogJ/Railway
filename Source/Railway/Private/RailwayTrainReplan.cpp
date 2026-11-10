@@ -39,10 +39,28 @@ int32 ContinueStopCursor(const ARailwayTrain& Train, FRailwayPreparedPlan& New, 
 {
     TArray<FRailwayPlannedStop>& Stops = New.Plan.Stops;
     constexpr double Tol = .0001;
-    if (bMatchServed && Train.Distance == New.StartDistance &&
-        SameItinerary(Train.ActivePlan, New.Plan))
-        return Train.NextStop; // 手动倒车也不会让同一份时刻表重放已服务站次。
+    for (FRailwayPlannedStop& Stop : Stops) Stop.bServed = false;
+    if (bMatchServed && Train.Distance == New.StartDistance && SameItinerary(Train.ActivePlan, New.Plan))
+    {
+        for (int32 I = 0; I < Train.NextStop; ++I) Stops[I].bServed = Train.ActivePlan.Stops[I].bServed;
+        return Train.NextStop;
+    } // 手动倒车也不会让同一份时刻表重放已服务站次。
 
+    // Carry recorded arrivals through the unchanged prefix. Routes that start at the
+    // current location have their own visit list; their occupied stop is handled below.
+    if (bMatchServed && Train.Distance == New.StartDistance && SharesPrefixThrough(Train.ActivePlan, New.Plan, Train.Leg))
+    {
+        for (int32 I = 0; I < Train.NextStop; ++I)
+        {
+            const FRailwayPlannedStop& Old = Train.ActivePlan.Stops[I];
+            if (!Old.bServed || Old.Distance >= Train.Distance - Tol) continue;
+            for (int32 J = Algo::LowerBoundBy(Stops, Old.Distance, &FRailwayPlannedStop::Distance);
+                J < Stops.Num() && Stops[J].Distance == Old.Distance; ++J)
+            {
+                if (!Stops[J].bServed && SameStop(Old, Stops[J])) { Stops[J].bServed = true; break; }
+            }
+        }
+    }
     TArray<FRailwayPlannedStop> ServedHere;
     const bool bDwelling = Train.State == ERailwayState::Dwelling;
     const int32 First = Algo::LowerBoundBy(Train.ActivePlan.Stops, Train.Distance - Tol, &FRailwayPlannedStop::Distance);
@@ -67,6 +85,7 @@ int32 ContinueStopCursor(const ARailwayTrain& Train, FRailwayPreparedPlan& New, 
         if (Match == INDEX_NONE && !bOccupied) continue;
         FRailwayPlannedStop& Served = ServedHere.Add_GetRef(Match == INDEX_NONE ? Old : Stops[Match]);
         Served.Distance = New.StartDistance;
+        Served.bServed = Old.bServed;
         if (Match != INDEX_NONE) Stops.RemoveAt(Match);
     }
 

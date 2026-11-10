@@ -43,7 +43,7 @@ void ARailwayTrackAnchor::ProjectToHost()
 {
     if (!HostTrack.IsValid() || !IsValid(HostTrack->Spline)) return;
     const USplineComponent* S = HostTrack->Spline;
-    TrackDistance = S->GetDistanceAlongSplineAtLocation(GetActorLocation(), ESplineCoordinateSpace::World);
+    TrackDistance = S->GetDistanceAlongSplineAtLocation(GetAnchorProjectionLocation(), ESplineCoordinateSpace::World);
 }
 
 void ARailwayTrackAnchor::RefreshAnchor()
@@ -51,8 +51,12 @@ void ARailwayTrackAnchor::RefreshAnchor()
     if (!HostTrack.IsValid() || !IsValid(HostTrack->Spline)) return;
     const USplineComponent* S = HostTrack->Spline;
     const float Distance = FMath::Clamp(TrackDistance, 0.0, static_cast<double>(S->GetSplineLength()));
-    const auto Pose = S->GetTransformAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
-    Railway::Placement::ApplyPose(*this, Pose, .001, .00001);
+    ApplyAnchorPose(S->GetTransformAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World));
+}
+
+void ARailwayTrackAnchor::ApplyAnchorPose(const FTransform& TrackPose)
+{
+    Railway::Placement::ApplyPose(*this, TrackPose, .001, .00001);
 }
 
 void ARailwayTrackAnchor::PostEditChangeProperty(FPropertyChangedEvent& Event)

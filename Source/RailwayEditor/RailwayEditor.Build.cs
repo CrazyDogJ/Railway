@@ -6,7 +6,8 @@ public class RailwayEditor : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PrivateDependencyModuleNames.AddRange(new[] {
-            "Core", "CoreUObject", "Engine", "Railway", "UnrealEd", "PropertyEditor", "ToolMenus", "Slate", "SlateCore"
+            "Core", "CoreUObject", "Engine", "Railway", "UnrealEd", "PropertyEditor", "ToolMenus", "Slate", "SlateCore", "UMG",
+            "BlueprintGraph", "UMGEditor"
         });
     }
 }

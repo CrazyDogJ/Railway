@@ -76,6 +76,10 @@ struct RAILWAY_API FRailwayPlannedStop
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
     int32 StationIndex = INDEX_NONE;
+
+    /** True once this particular visit has actually arrived. */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, SaveGame, Category="Railway")
+    bool bServed = false;
 };
 
 USTRUCT(BlueprintType)

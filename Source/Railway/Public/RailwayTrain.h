@@ -4,6 +4,7 @@
 #include "GameFramework/Actor.h"
 #include "RailwayMoveBuffer.h"
 #include "RailwayRouteSettings.h"
+#include "RailwayPlanControl.h"
 #include "RailwayTrainSaveGame.h"
 #include "RailwayTrain.generated.h"
 
@@ -11,6 +12,7 @@ class UStaticMeshComponent;
 class ARailwayDataActor;
 struct FRailwayPreparedPlan;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE(FRailwayTimetableChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRailwayArrival, FName, StationName);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FRailwayStateChanged, ERailwayState, PrevState, ERailwayState, NewRaywayState);
 
@@ -106,6 +108,25 @@ public:
     // Supply the current directed track first, then the desired connected tracks.
     UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Route")
     bool ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FString& OutError);
+
+    /** Override on the server to enforce project-specific dispatch permissions. */
+    UFUNCTION(BlueprintNativeEvent, Category="Railway|Dispatch")
+    bool CanPlayerEditPlan(APlayerController* Player) const;
+
+    UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Dispatch")
+    bool ApplyPlayerPlanCommand(APlayerController* Player, const FRailwayPlanCommand& Command, FString& OutError);
+
+    UFUNCTION(BlueprintPure, Category="Railway|Dispatch")
+    int64 GetPlanRevision() const { return ActivePlan.NetworkRevision; }
+
+    /** Re-read list rows on this train when its plan, presentation readiness or stop cursor changes. */
+    UPROPERTY(BlueprintAssignable, Category="Railway|Player UI")
+    FRailwayTimetableChanged OnRailwayTimetableChanged;
+
+    uint32 GetTimetableUpdateSerial() const { return TimetableUpdateSerial; }
+    bool IsPlanPresentationCurrent() const { return HasAuthority() || PresentedPlanRevision == ActivePlan.NetworkRevision; }
+    double GetServiceEndDistance() const;
+    void GetPossiblePlanStops(TArray<FRailwayPlannedStop>& OutStops) const;
 
     /** 当前运行状态，由 SetState 统一分发状态变化事件。 */
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Railway")
@@ -263,6 +284,10 @@ private:
     FRailwayMoveBuffer MoveBuffer;
     // 客户端当前显示姿态所属的计划版本。
     uint32 PresentedPlanRevision = 0;
+    uint32 TimetableUpdateSerial = 0;
+    uint32 NotifiedPlanRevision = 0;
+    int32 NotifiedStop = INDEX_NONE;
+    ERailwayState NotifiedState = ERailwayState::Idle;
 
     // 累计段尾里程（cm），服务端换线或客户端收到计划时重建。
     TArray<double> SectionEnds;
@@ -270,6 +295,8 @@ private:
 
     bool RestoreSavedService(const FRailwayTrainSaveGame& Save, FString& Error);
     bool ParkAtRecoveryPoint(ERailwayDriveMode Mode, FString& Error);
+    bool CancelService(FString& Error);
+    bool EditScheduledVisit(const FRailwayPlanCommand& Command, FString& Error);
     bool IsInService() const;
     FName GetStationForState(ERailwayState InState) const;
     bool RefreshDwell();

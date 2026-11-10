@@ -216,7 +216,8 @@ bool Remap(const ARailwayDataActor& Actor, const FRailwayTrainSaveGame& Save,
             Error = TEXT("A scheduled station moved off its saved traversal");
             return false;
         }
-        Plan.Stops.Add({At, *Index});
+        const bool bServed = Save.RailwayPlan.Stops[Plan.Stops.Num()].bServed;
+        Plan.Stops.Add({At, *Index, bServed});
     }
     if (Save.State == ERailwayState::Dwelling && Save.NextStop > 0 && Plan.Stops.IsValidIndex(Save.NextStop - 1))
         Distance = Plan.Stops[Save.NextStop - 1].Distance;

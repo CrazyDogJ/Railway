@@ -1,4 +1,5 @@
 #include "RailwayDataBuilder.h"
+#include "RailwayDebugDraw.h"
 #include "RailwaySourceRefCustomization.h"
 #include "PropertyEditorModule.h"
 
@@ -13,8 +14,11 @@
 
 class FRailwayEditorModule final : public IModuleInterface
 {
+    FDelegateHandle DebugDraw;
+
     virtual void StartupModule() override
     {
+        DebugDraw = Railway::Editor::RegisterTrainDebugDraw();
         auto& Properties = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
         Properties.RegisterCustomPropertyTypeLayout("RailwaySourceRef",
             FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FRailwaySourceRefCustomization::MakeInstance));
@@ -24,6 +28,7 @@ class FRailwayEditorModule final : public IModuleInterface
 
     virtual void ShutdownModule() override
     {
+        Railway::Editor::UnregisterTrainDebugDraw(DebugDraw);
         if (auto* Properties = FModuleManager::GetModulePtr<FPropertyEditorModule>("PropertyEditor"))
         {
             Properties->UnregisterCustomPropertyTypeLayout("RailwaySourceRef");

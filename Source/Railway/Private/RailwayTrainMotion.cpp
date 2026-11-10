@@ -103,6 +103,7 @@ void ARailwayTrain::ArriveAtTarget(uint32 ExpectedRevision)
         FailRoute(TEXT("Cannot arrive at a removed, moved or invalid station"));
         return;
     }
+    ActivePlan.Stops[NextStop].bServed = true;
     ++NextStop;
     ElapsedDwell = 0;
     DriveInput = 0.f;

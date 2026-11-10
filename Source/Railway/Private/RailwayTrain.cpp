@@ -29,7 +29,9 @@ ARailwayTrain::ARailwayTrain()
     Body->SetRelativeLocation(FVector(0, 0, 50));
 
     bReplicates = true;
+#if WITH_EDITORONLY_DATA
     bIsSpatiallyLoaded = false;
+#endif
     SetReplicatingMovement(false);
 }
 
@@ -232,6 +234,7 @@ bool ARailwayTrain::RestartPreparedRouteAtDistance(const FRailwayPlan& Plan, dou
     }
     FRailwayPreparedPlan Prepared;
     if (!Railway::Routing::Prepare(GetRailwayData(), Plan, StartDistance, Prepared, OutError)) return false;
+    for (FRailwayPlannedStop& Stop : Prepared.Plan.Stops) Stop.bServed = false;
     // 严格小于起点的站才算跳过，恰好在起点的多个站仍按顺序服务。
     const int32 StopCursor = Algo::LowerBoundBy(Prepared.Plan.Stops, StartDistance, &FRailwayPlannedStop::Distance);
     const bool bAlreadyAtDestination = Prepared.SectionEnds.Last() == 0.0 && Prepared.Plan.Stops.IsEmpty();
@@ -275,12 +278,15 @@ bool ARailwayTrain::GoDirectToStop(int32 DestinationStopIndex, FString& OutError
         OutError = TEXT("Select an unserved stop on an active server train");
         return false;
     }
-    FRailwayPlan Direct;
-    MakeDirectPlan(ActivePlan, DestinationStopIndex, Direct);
-    // 裁剪停站表不会改变几何；这里的累计里程仍属于同一组区间。
-    FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetRailwayData(), MoveTemp(Direct), Distance, Prepared, OutError)) return false;
-    return ContinuePreparedPlan(MoveTemp(Prepared), false, OutError);
+    FRailwayPlan Direct = ActivePlan;
+    const FRailwayPlannedStop Destination = Direct.Stops[DestinationStopIndex];
+    Direct.Stops.SetNum(NextStop);
+    Direct.Stops.Add(Destination);
+    Direct.bFinishAtLastStop = true;
+    InstallPlan(MoveTemp(Direct));
+    PublishMoveState(true);
+    OutError.Reset();
+    return true;
 }
 
 bool ARailwayTrain::ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FString& OutError)
