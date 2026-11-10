@@ -2,9 +2,13 @@
 #include "RailwayTrackPlacement.h"
 #include "Components/SceneComponent.h"
 #include "Components/SplineComponent.h"
+#if WITH_EDITORONLY_DATA
 #include "Components/ArrowComponent.h"
 #include "Components/TextRenderComponent.h"
+#endif
+#if WITH_EDITOR
 #include "Engine/World.h"
+#endif
 
 namespace Railway::Placement
 {
@@ -25,6 +29,7 @@ ARailwayTrackAnchor::ARailwayTrackAnchor()
 #endif
 }
 
+#if WITH_EDITOR
 void ARailwayTrackAnchor::SetTrackAnchorAtDistance(ARailwayTrack* Track, double DistanceCm)
 {
     if (!FMath::IsFinite(DistanceCm) || (Track && (!IsValid(Track) || Track->GetWorld() != GetWorld()))) return;
@@ -49,7 +54,6 @@ void ARailwayTrackAnchor::RefreshAnchor()
     Railway::Placement::ApplyPose(*this, Pose, .001, .00001);
 }
 
-#if WITH_EDITOR
 void ARailwayTrackAnchor::PostEditChangeProperty(FPropertyChangedEvent& Event)
 {
     if (Event.GetPropertyName() == GET_MEMBER_NAME_CHECKED(ARailwayTrackAnchor, HostTrack))
@@ -107,6 +111,7 @@ ARailwayStationMarker::ARailwayStationMarker()
 #endif
 }
 
+#if WITH_EDITOR
 FRailwayStation ARailwayStationMarker::GetStationDefinition() const
 {
     return FRailwayStation{StationName, TrackDistance, DwellSeconds, CustomData};
@@ -115,10 +120,9 @@ FRailwayStation ARailwayStationMarker::GetStationDefinition() const
 void ARailwayStationMarker::OnConstruction(const FTransform& Transform)
 {
     Super::OnConstruction(Transform);
-#if WITH_EDITORONLY_DATA
     if (Label) Label->SetText(FText::FromName(StationName));
-#endif
 }
+#endif
 
 ARailwayTrack::ARailwayTrack()
 {
@@ -137,16 +141,12 @@ void ARailwayTrack::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
     if (GetWorld()->WorldType == EWorldType::Editor) AlignEndpoints(false);
 }
-#endif
 
 void ARailwayTrack::SnapEndpointsToJunctions()
 {
-#if WITH_EDITOR
     if (GetWorld() && GetWorld()->WorldType == EWorldType::Editor) AlignEndpoints(true);
-#endif
 }
 
-#if WITH_EDITOR
 void ARailwayTrack::AlignEndpoints(bool bIncludeFreeJunctions)
 {
     if (!Spline || Spline->IsClosedLoop())
@@ -165,13 +165,11 @@ void ARailwayTrack::AlignEndpoints(bool bIncludeFreeJunctions)
         Junction->RefreshAnchor();
         const FVector Location = Junction->GetActorLocation();
         if (Spline->GetLocationAtSplinePoint(Point, ESplineCoordinateSpace::World).Equals(Location, .001)) return;
-#if WITH_EDITOR
         if (!bChanged && GetWorld() && GetWorld()->WorldType == EWorldType::Editor)
         {
             Modify();
             Spline->Modify();
         }
-#endif
         Spline->SetLocationAtSplinePoint(Point, Location, ESplineCoordinateSpace::World, false);
         bChanged = true;
     };
@@ -180,9 +178,7 @@ void ARailwayTrack::AlignEndpoints(bool bIncludeFreeJunctions)
     if (bChanged)
     {
         Spline->UpdateSpline();
-#if WITH_EDITORONLY_DATA
         Spline->bSplineHasBeenEdited = true;
-#endif
     }
 }
 #endif

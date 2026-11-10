@@ -65,6 +65,11 @@ bool ARailwayTrain::GetPreviewLocation_Implementation(FRailwayLeg& PreviewLeg, d
     return true;
 }
 
+bool ARailwayTrain::UpdatePreviewRotation_Implementation()
+{
+    return true;
+}
+
 #if WITH_EDITOR
 void ARailwayTrain::RefreshPreview()
 {
@@ -73,6 +78,7 @@ void ARailwayTrain::RefreshPreview()
     double Local = 0;
     const ARailwayDataActor* Data = GetRailwayData();
     if (!Data || !GetPreviewLocation(First, Local) || !Data->Network.Edges.IsValidIndex(First.EdgeIndex)) return;
+    UpdatePreviewRotation();
     const FRailwayEdge& Edge = Data->Network.Edges[First.EdgeIndex];
     FTransform Pose;
     if (Data->SampleTrack({Edge.TrackIndex, Local}, Edge.IsReverse(), Pose))
@@ -374,4 +380,5 @@ void ARailwayTrain::Tick(float DeltaSeconds)
     {
         TickClientPresentation();
     }
+    UpdatePreviewRotation();
 }

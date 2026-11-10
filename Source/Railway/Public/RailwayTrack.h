@@ -14,17 +14,19 @@ class RAILWAY_API ARailwayTrackAnchor : public ARailwayNetworkActor
 public:
     ARailwayTrackAnchor();
 
+#if WITH_EDITORONLY_DATA
     UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category="Railway")
     TSoftObjectPtr<ARailwayTrack> HostTrack;
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Railway", meta=(ClampMin="0", Units="cm"))
     double TrackDistance = 0;
+#endif
 
+#if WITH_EDITOR
     UFUNCTION(BlueprintCallable, Category="Railway|Anchor")
     void SetTrackAnchorAtDistance(ARailwayTrack* Track, double DistanceCm);
     void RefreshAnchor();
     void ProjectToHost();
-#if WITH_EDITOR
     virtual bool ShouldTickIfViewportsOnly() const override { return true; }
     virtual void Tick(float DeltaSeconds) override;
     virtual void PostEditMove(bool bFinished) override;
@@ -50,8 +52,12 @@ class RAILWAY_API ARailwayStationMarker : public ARailwayTrackAnchor
     GENERATED_BODY()
 public:
     ARailwayStationMarker();
+#if WITH_EDITOR
     virtual FRailwayStation GetStationDefinition() const;
+    virtual void OnConstruction(const FTransform& Transform) override;
+#endif
 
+#if WITH_EDITORONLY_DATA
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Station")
     FName StationName = TEXT("Station");
 
@@ -61,8 +67,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Station")
     FInstancedStruct CustomData;
 
-    virtual void OnConstruction(const FTransform& Transform) override;
-#if WITH_EDITORONLY_DATA
     UPROPERTY()
     TObjectPtr<class UTextRenderComponent> Label;
 #endif
@@ -92,9 +96,11 @@ public:
     TArray<FRailwayStation> Stations;
 #endif
 
+#if WITH_EDITOR
     UFUNCTION(CallInEditor, BlueprintCallable, Category="Railway")
     void SnapEndpointsToJunctions();
 
 private:
     void AlignEndpoints(bool bIncludeFreeJunctions);
+#endif
 };

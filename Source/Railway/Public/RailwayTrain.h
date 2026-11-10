@@ -186,6 +186,10 @@ public:
     UFUNCTION(BlueprintNativeEvent, Category="Railway|Editor")
     bool GetPreviewLocation(FRailwayLeg& PreviewLeg, double& TrackDistance) const;
 
+    // If your train is stay horizontal, update here.
+    UFUNCTION(BlueprintNativeEvent, Category="Railway|Editor")
+    bool UpdatePreviewRotation();
+    
     UFUNCTION(BlueprintCallable, Category="Railway|Save Game", BlueprintAuthorityOnly)
     FRailwayTrainSaveGame GetSaveGameData() const;
     
