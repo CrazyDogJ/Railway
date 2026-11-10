@@ -1,12 +1,8 @@
 #include "RailwayTrain.h"
 
 #include "Algo/BinarySearch.h"
-#include "Components/SplineComponent.h"
 #include "RailwayRouteGeometry.h"
 #include "RailwayRoutePlanner.h"
-#include "RailwayTrack.h"
-#include "RailwayWorldIndex.h"
-#include "UObject/Class.h"
 
 namespace
 {
@@ -17,7 +13,7 @@ bool SharesPrefixThrough(const FRailwayPlan& Old, const FRailwayPlan& New, int32
     {
         const FRailwaySection& A = Old.Sections[I];
         const FRailwaySection& B = New.Sections[I];
-        if (A.Leg.Track != B.Leg.Track || A.Leg.bReverse != B.Leg.bReverse || A.EntryDistance != B.EntryDistance ||
+        if (A.Leg.EdgeIndex != B.Leg.EdgeIndex || A.EntryDistance != B.EntryDistance ||
             (I < Occupied && A.TravelDistance != B.TravelDistance)) return false;
     }
     return true;
@@ -25,9 +21,7 @@ bool SharesPrefixThrough(const FRailwayPlan& Old, const FRailwayPlan& New, int32
 
 bool SameStop(const FRailwayPlannedStop& A, const FRailwayPlannedStop& B)
 {
-    if (Railway::Stations::SameSource(A.Reference, B.Reference)) return true;
-    return A.Reference.Source == ERailwayStationSource::Inline && B.Reference.Source == ERailwayStationSource::Inline &&
-        FRailwayStation::StaticStruct()->CompareScriptStruct(&A.Station, &B.Station, 0);
+    return A.StationIndex == B.StationIndex;
 }
 
 bool SameItinerary(const FRailwayPlan& A, const FRailwayPlan& B)
@@ -85,44 +79,27 @@ int32 ContinueStopCursor(const ARailwayTrain& Train, FRailwayPreparedPlan& New, 
 bool ARailwayTrain::GetCurrentTrackLocation(FRailwayTrackLocation& OutLocation) const
 {
     OutLocation = FRailwayTrackLocation();
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (!Data) return false;
     if (!ActivePlan.Sections.IsEmpty())
     {
         // 客户端使用已应用到车体的计划版本；新计划与运动快照可能分帧到达。
         if (!HasAuthority() && PresentedPlanRevision != ActivePlan.NetworkRevision) return false;
         double Local;
         int32 Section;
-        if (!Railway::Geometry::Locate(ActivePlan, SectionEnds, Distance, Section, Local)) return false;
-        OutLocation = FRailwayTrackLocation{ActivePlan.Sections[Section].Leg.Track, Local};
+        if (!Railway::Geometry::Locate(Data->Network, ActivePlan, SectionEnds, Distance, Section, Local)) return false;
+        OutLocation = {Data->Network.Edges[ActivePlan.Sections[Section].Leg.EdgeIndex].TrackIndex, Local};
         return true;
     }
 
-    // 初次发车优先使用已知宿主。自由放置时只接受唯一贴合的轨道，不在交叉处按遍历顺序猜测。
-    const FVector Position = GetActorLocation();
-    auto TryProject = [&](ARailwayTrack* Track, FRailwayTrackLocation& Projected)
-    {
-        if (!IsValid(Track) || !IsValid(Track->Spline) || Track->GetWorld() != GetWorld() ||
-            Track->Spline->GetSplineLength() < 1.f) return false;
-        const float Local = Track->Spline->GetDistanceAlongSplineAtLocation(Position, ESplineCoordinateSpace::World);
-        const FVector OnTrack = Track->Spline->GetLocationAtDistanceAlongSpline(Local, ESplineCoordinateSpace::World);
-        if (!FMath::IsFinite(Local) || OnTrack.ContainsNaN() ||
-            FVector::Dist(OnTrack, Position) > Railway::Routing::JunctionToleranceCm) return false;
-        Projected = FRailwayTrackLocation{Track, Local};
-        return true;
-    };
-    if (ARailwayTrack* Host = Cast<ARailwayTrack>(GetAttachParentActor())) return TryProject(Host, OutLocation);
-    if (!Route.IsEmpty() && IsValid(Route[0].Track)) return TryProject(Route[0].Track, OutLocation);
-
-    const FRailwayWorldIndex Index(GetWorld());
-    FRailwayTrackLocation Unique;
-    for (ARailwayTrack* Track : Index.GetTracks())
-    {
-        FRailwayTrackLocation Candidate;
-        if (!TryProject(Track, Candidate)) continue;
-        if (Unique.Track) return false;
-        Unique = Candidate;
-    }
-    OutLocation = Unique;
-    return IsValid(Unique.Track);
+    FRailwayLeg Preview;
+    double Local = 0;
+    if (!GetPreviewLocation(Preview, Local) || !Data->Network.Edges.IsValidIndex(Preview.EdgeIndex)) return false;
+    const FRailwayEdge& Edge = Data->Network.Edges[Preview.EdgeIndex];
+    FTransform Pose;
+    OutLocation = {Edge.TrackIndex, Local};
+    return Data->SampleTrack(OutLocation, Edge.IsReverse(), Pose) &&
+        FVector::Dist(Pose.GetLocation(), GetActorLocation()) <= Railway::Routing::JunctionToleranceCm;
 }
 
 bool ARailwayTrain::ReplacePreparedRoute(const FRailwayPlan& Plan, FString& OutError, int32 SectionHint)
@@ -140,13 +117,13 @@ bool ARailwayTrain::ReplacePreparedRoute(const FRailwayPlan& Plan, FString& OutE
     }
 
     FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetWorld(), Plan, 0.0, Prepared, OutError)) return false;
+    if (!Railway::Routing::Prepare(GetRailwayData(), Plan, 0.0, Prepared, OutError)) return false;
     // 多圈重叠时，只有几何前缀相同才允许原行程里程用作圈次提示。
     TOptional<double> SharedPrefixDistance;
     if (SharesPrefixThrough(ActivePlan, Prepared.Plan, Leg) && Distance <= Prepared.SectionEnds[Leg])
         SharedPrefixDistance = Distance;
     double Mapped;
-    if (!Railway::Geometry::FindPlanDistance(Prepared.Plan, Prepared.SectionEnds, Current, SectionHint,
+    if (!Railway::Geometry::FindPlanDistance(Prepared.Data->Network, Prepared.Plan, Prepared.SectionEnds, Current, SectionHint,
         SharedPrefixDistance, Mapped, OutError)) return false;
     if (Prepared.Plan.bFinishAtLastStop && FMath::IsNearlyEqual(Mapped, Prepared.Plan.Stops.Last().Distance, UE_SMALL_NUMBER))
         Mapped = Prepared.Plan.Stops.Last().Distance;
@@ -175,7 +152,7 @@ bool ARailwayTrain::ContinuePreparedPlan(FRailwayPreparedPlan&& Prepared, bool b
     {
         // 占用站可能由旧计划带入；提交前按新轨道重新核对它的来源、里程和世界位置。
         FRailwayPreparedPlan Checked;
-        if (!Railway::Routing::Prepare(GetWorld(), MoveTemp(Prepared.Plan), Prepared.StartDistance, Checked, OutError)) return false;
+        if (!Railway::Routing::Prepare(GetRailwayData(), MoveTemp(Prepared.Plan), Prepared.StartDistance, Checked, OutError)) return false;
         Prepared = MoveTemp(Checked);
     }
     const double Terminus = Prepared.Plan.bFinishAtLastStop ? Prepared.Plan.Stops.Last().Distance : Prepared.SectionEnds.Last();

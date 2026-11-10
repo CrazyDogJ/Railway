@@ -1,34 +1,16 @@
 #pragma once
 
-#include "RailwayUtils.h"
-
-class USplineComponent;
+#include "RailwayDataActor.h"
 
 namespace Railway::Geometry
 {
-    // 闭合样条的首尾对应同一点，返回 [0, Length) 内的里程。调用方保证 Length > 0。
-    double WrapDistance(double Distance, double Length);
+    void BuildSectionEnds(const FRailwayPlan& Plan, TArray<double>& Ends);
+    bool Locate(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
+        double Distance, int32& SectionIndex, double& TrackDistance);
 
-    // 统一按样条的 float 采样精度取有效里程。只限制采样值，不改写作者设置的距离。
-    float DistanceOnSpline(const USplineComponent& Spline, double TrackDistance);
+    bool Sample(const ARailwayDataActor* Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
+        double Distance, int32& SectionIndex, double& TrackDistance, FTransform& Pose);
 
-    // TrackDistance 从样条首点起算（cm），采样时按开放轨道或闭环规范化。
-    FTransform SampleTrack(const FRailwayLeg& Leg, double TrackDistance);
-
-    // 无缓存时按段遍历，适用于尚未发车的计划。接缝属于下一段，终点属于最后一段。
-    bool SamplePlan(const FRailwayPlan& Plan, double Distance, int32& SectionIndex, double& TrackDistance, FTransform& Pose);
-
-    // 仅定位到轨道和局部里程，改线时无需额外求世界姿态。
-    bool Locate(const FRailwayPlan& Plan, const TArray<double>& SectionEnds, double Distance,
-        int32& SectionIndex, double& TrackDistance);
-
-    // 已装载计划使用累计段尾里程做二分查找，服务端运动和客户端显示共用相同的接缝规则。
-    bool SampleIndexedPlan(const FRailwayPlan& Plan, const TArray<double>& SectionEnds, double Distance,
-        int32& SectionIndex, double& TrackDistance, FTransform& Pose);
-
-    // 将轨道上的物理位置反算为新计划的累计里程，只在已连接的岔口接受相邻轨道的同一点。
-    bool FindPlanDistance(const FRailwayPlan& Plan, const TArray<double>& SectionEnds, const FRailwayTrackLocation& Location,
-        int32 SectionHint, TOptional<double> SharedPrefixDistance, double& OutDistance, FString& Error);
-
-    void BuildSectionEnds(const FRailwayPlan& Plan, TArray<double>& OutEnds);
+    bool FindPlanDistance(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
+        const FRailwayTrackLocation& Location, int32 SectionHint, TOptional<double> Preferred, double& OutDistance, FString& Error);
 }

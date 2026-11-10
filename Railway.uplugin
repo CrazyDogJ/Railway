@@ -1,1 +1,14 @@
-{"FileVersion":3,"Version":2,"VersionName":"0.2.0","FriendlyName":"Railway","Description":"Editable spline rail networks, train routes and station stops.","Category":"Gameplay","CanContainContent":true,"Modules":[{"Name":"Railway","Type":"Runtime","LoadingPhase":"Default"}]}
+{
+    "FileVersion": 3,
+    "Version": 3,
+    "VersionName": "0.3.0",
+    "FriendlyName": "Railway",
+    "Description": "Baked spline railway networks, train routes and station stops.",
+    "Category": "Gameplay",
+    "CreatedBy": "ChatGPT-6 Astra",
+    "CanContainContent": true,
+    "Modules": [
+        { "Name": "Railway", "Type": "Runtime", "LoadingPhase": "Default" },
+        { "Name": "RailwayEditor", "Type": "Editor", "LoadingPhase": "PostEngineInit" }
+    ]
+}

@@ -7,7 +7,7 @@
 #include "RailwayTrain.generated.h"
 
 class UStaticMeshComponent;
-class ARailwayStationMarker;
+class ARailwayDataActor;
 struct FRailwayPreparedPlan;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRailwayArrival, FName, StationName);
@@ -33,7 +33,14 @@ public:
 
     virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
     
-    /** 按行驶顺序排列的轨道与方向，发车时生成实际执行的 ActivePlan。 */
+    /** 多个铁路网共存时显式指定。留空时优先使用同关卡的数据，再尝试世界中唯一的铁路网。 */
+    UPROPERTY(EditInstanceOnly, BlueprintReadOnly, Category="Railway")
+    TObjectPtr<ARailwayDataActor> RailwayData;
+
+    UFUNCTION(BlueprintPure, Category="Railway")
+    ARailwayDataActor* GetRailwayData() const;
+
+    /** 按行驶顺序排列的有向边索引。 */
     UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category="Railway")
     TArray<FRailwayLeg> Route;
 
@@ -123,7 +130,7 @@ public:
     UFUNCTION(BlueprintPure, Category="Railway")
     void GetNextStopInfo(double& OutDistanceRemain, FRailwayStation& OutStationInfo) const;
 
-    /** 从当前世界读取站次的站名、时长和 CustomData。来源无效或位置已变时返回 false。 */
+    /** 从烘焙站点表读取站名、时长和 CustomData。 */
     UFUNCTION(BlueprintPure, Category="Railway|Route")
     bool ResolvePlannedStop(const FRailwayPlannedStop& Stop, FRailwayStation& OutStation) const;
 
@@ -140,14 +147,9 @@ public:
     bool FindRoutePlan(const FRailwayTrackLocation& Start, const FRailwayTrackLocation& Destination,
         FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations = false) const;
 
-    /** 前往场景站点。可选择沿途停站，指定目的站始终是最后一次停靠。 */
+    /** 按烘焙索引前往站点。可选择沿途停站，指定目的站始终是最后一次停靠。 */
     UFUNCTION(BlueprintCallable, Category="Railway|Pathfinding")
-    bool FindRoutePlanToStation(const FRailwayTrackLocation& Start, ARailwayStationMarker* DestinationStation,
-        FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations = false) const;
-
-    /** 前往 Track.Stations 中指定 ID 的站点，可选择沿途停站。 */
-    UFUNCTION(BlueprintCallable, Category="Railway|Pathfinding")
-    bool FindRoutePlanToTrackStation(const FRailwayTrackLocation& Start, ARailwayTrack* DestinationTrack, FGuid StationId,
+    bool FindRoutePlanToStation(const FRailwayTrackLocation& Start, int32 StationIndex,
         FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations = false) const;
 
     /** 返回车体当前所在的轨道与样条原生里程，可直接连接寻路节点的 Start。 */
@@ -172,7 +174,7 @@ public:
 
     // Samples a plan before it is started (for editor previews and planning).
     UFUNCTION(BlueprintPure, Category="Railway|Route")
-    static bool SamplePlan(const FRailwayPlan& Plan, double RouteDistance, int32& SectionIndex, double& TrackDistance, FTransform& Pose);
+    bool SamplePlan(const FRailwayPlan& Plan, double RouteDistance, int32& SectionIndex, double& TrackDistance, FTransform& Pose) const;
 
     UFUNCTION(BlueprintPure, Category="Railway|Route")
     double GetRouteLength() const { return SectionEnds.IsEmpty() ? 0.0 : SectionEnds.Last(); }
@@ -230,6 +232,8 @@ protected:
     virtual double CalculateDriverTargetSpeed(double SpeedLimit, double DeltaSeconds) const;
 
 private:
+    mutable TWeakObjectPtr<ARailwayDataActor> CachedRailwayData;
+
     UFUNCTION()
     void OnRep_TrainMoveState();
 

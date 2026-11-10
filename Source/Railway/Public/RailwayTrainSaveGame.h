@@ -21,10 +21,6 @@ struct RAILWAY_API FRailwayTrainSaveGame
     UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
     bool bValid = false;
 
-    /** 缺少此字段的是旧快照存档，仅在能唯一关联世界站次时迁移。 */
-    UPROPERTY(SaveGame)
-    int32 FormatVersion = 0;
-
     /** 已停留的秒数。读档时用当前站点配置减去该值。 */
     UPROPERTY(SaveGame)
     double ElapsedDwell = 0;

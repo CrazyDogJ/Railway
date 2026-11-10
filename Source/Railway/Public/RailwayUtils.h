@@ -4,163 +4,72 @@
 #include "StructUtils/InstancedStruct.h"
 #include "RailwayUtils.generated.h"
 
-class ARailwayTrack;
-class ARailwayNetworkActor;
-
-/** 寻路端点。TrackDistance 从样条首点沿原生方向量起，单位 cm。 */
+/** Native distance from the first spline point, in cm. Both travel directions are eligible. */
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwayTrackLocation
 {
     GENERATED_BODY()
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Railway")
-    TObjectPtr<ARailwayTrack> Track;
+    int32 TrackIndex = INDEX_NONE;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Railway", meta=(ClampMin="0", Units="cm"))
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Railway", meta=(Units="cm"))
     double TrackDistance = 0;
 };
 
-/** 一个有方向的轨道引用，允许在同一路线中多次经过同一轨道。 */
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwayLeg
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Route")
-	TObjectPtr<ARailwayTrack> Track;
-
-	/** 为真时沿样条里程减小的方向行驶。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Route")
-	bool bReverse = false;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
+    int32 EdgeIndex = INDEX_NONE;
 };
 
-/** 实际经过的轨道区间，入口可位于中段，闭环区间可跨越首尾接缝。 */
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwaySection
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
-	FRailwayLeg Leg;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
+    FRailwayLeg Leg;
 
-	/** 入口相对样条首点的弧长，单位 cm。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
-	double EntryDistance = 0;
+    /** Native spline distance at entry. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway", meta=(Units="cm"))
+    double EntryDistance = 0;
 
-	/** 沿 Leg 指定方向的行驶长度（cm）。零长度区间记录恰好位于换轨点的端点姿态。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
-	double TravelDistance = 0;
-
-    /** 跨加载的轨道身份。Leg.Track 是本次装载的运行时引用。 */
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, SaveGame, Category="Railway")
-    FGuid TrackId;
-
-    /** 编制计划时的局部几何与连接签名，用于拒绝已失效的里程。 */
-    UPROPERTY(SaveGame)
-    FGuid LayoutSignature;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway", meta=(Units="cm"))
+    double TravelDistance = 0;
 };
 
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwayStation
 {
-	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station")
-	FName Name = TEXT("Station");
-
-    /** 从宿主样条首点起算的厘米数，延长轨道不会改变该值。 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station", meta=(ClampMin="0", Units="cm"))
-    double TrackDistance = 0;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station", meta=(ClampMin="0", Units="s"))
-	float DwellSeconds = 3.f;
-
-    /** 项目自定义的数据，由站点定义持有。 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station")
-    FInstancedStruct CustomData;
-
-    /** 内嵌站点和所属轨道的 ID 一起唯一定位一行。 */
-    UPROPERTY(EditInstanceOnly, BlueprintReadWrite, SaveGame, AdvancedDisplay, Category="Station")
-    FGuid StationId;
-
-    bool Serialize(FArchive& Ar);
-    void UpgradeTrackDistance(float SplineLength);
-
-    // 旧属性名用于读取带标签的关卡和存档。没有宿主时暂存，转换后重置为 -1。
-    UPROPERTY(SaveGame, NotReplicated)
-    float Position = -1.f;
-};
-
-template<>
-struct TStructOpsTypeTraits<FRailwayStation> : TStructOpsTypeTraitsBase2<FRailwayStation>
-{
-    enum { WithSerializer = true };
-};
-
-UENUM(BlueprintType)
-enum class ERailwayStationSource : uint8
-{
-    Unspecified UMETA(Hidden),
-    Inline,
-    Marker,
-    TrackStation,
-    LegacySnapshot UMETA(Hidden)
-};
-
-USTRUCT(BlueprintType)
-struct RAILWAY_API FRailwayStationRef
-{
     GENERATED_BODY()
 
-    /** Inline 表示由计划定义的临时站。来源丢失的世界站点不能降级为 Inline。 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Station")
-    ERailwayStationSource Source = ERailwayStationSource::Unspecified;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Station")
+    FName Name = TEXT("Station");
 
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, SaveGame, Category="Station")
-    FGuid StationId;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Station", meta=(ClampMin="0", Units="cm"))
+    double TrackDistance = 0;
 
-    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, SaveGame, Category="Station")
-    FGuid HostTrackId;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Station", meta=(ClampMin="0", Units="s"))
+    float DwellSeconds = 3.f;
 
-    /** 编制站次时站点相对宿主首点的厘米数；-1 表示尚待绑定的旧引用。 */
-    UPROPERTY(SaveGame)
-    double PlannedTrackDistance = -1;
-
-    // 仅用于将缺少 PlannedTrackDistance 的旧站次按其宿主长度升级。
-    UPROPERTY(SaveGame, NotReplicated)
-    float PlannedPosition = 0.f;
-
-    /** 发车时解析、网络传递的场景引用；存档只带身份。 */
-    UPROPERTY(Transient)
-    TObjectPtr<ARailwayNetworkActor> SourceActor;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Station")
+    FInstancedStruct CustomData;
 };
 
-/** 一次停靠，Distance 是整条行程的累计厘米数。同名站或不同圈次各占一项。 */
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwayPlannedStop
 {
-	GENERATED_BODY()
+    GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
-	double Distance = 0;
-
-	/** 计划自定义的 Inline 站点值。场景站点使用列车的 Resolve Planned Stop 蓝图节点。 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
-	FRailwayStation Station;
-
-    /** 世界站次通过 Resolve Planned Stop 取得实时定义。Station 字段仅用于 Inline 及旧存档。 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
-    FRailwayStationRef Reference;
+    double Distance = 0;
 
-    // 没有来源字段的磁盘对象是旧快照。内存中新建的手工站次仍可直接使用 Station。
-    bool Serialize(FArchive& Ar);
-    void PostSerialize(const FArchive& Ar);
-};
-
-template<>
-struct TStructOpsTypeTraits<FRailwayPlannedStop> : TStructOpsTypeTraitsBase2<FRailwayPlannedStop>
-{
-    enum { WithSerializer = true, WithPostSerialize = true };
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
+    int32 StationIndex = INDEX_NONE;
 };
 
 USTRUCT(BlueprintType)
@@ -170,6 +79,10 @@ struct RAILWAY_API FRailwayPlan
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
 	TArray<FRailwaySection> Sections;
+
+    /** Identifies a complete bake. Track, edge and station references are int32 indices. */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, SaveGame, Category="Railway")
+    FGuid BuildId;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
 	TArray<FRailwayPlannedStop> Stops;

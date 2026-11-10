@@ -1,7 +1,6 @@
 #include "RailwayTrain.h"
 
-#include "RailwayWorldIndex.h"
-#include "RailwayTrack.h"
+#include "RailwayDataActor.h"
 
 void ARailwayTrain::ServerSetDriveMode_Implementation(ERailwayDriveMode NewMode)
 {
@@ -39,13 +38,11 @@ double ARailwayTrain::CalculateDriverTargetSpeed(double SpeedLimit, double Delta
 bool ARailwayTrain::RefreshDwell()
 {
     if (!ActivePlan.Sections.IsValidIndex(Leg)) return FailRoute(TEXT("Missing occupied section"));
-    const FRailwaySection& Section = ActivePlan.Sections[Leg];
-    if (!IsValid(Section.Leg.Track) || Section.Leg.Track->RailwayId != Section.TrackId ||
-        Section.Leg.Track->GetLayoutSignature() != Section.LayoutSignature)
-        return FailRoute(TEXT("Occupied track or its layout changed during dwell"));
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (!Data || Data->Network.BuildId != ActivePlan.BuildId) return FailRoute(TEXT("Missing active railway network"));
     FRailwayStation Station;
     if (!ActivePlan.Stops.IsValidIndex(NextStop - 1) ||
-        !Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop - 1], Station))
+        !ResolvePlannedStop(ActivePlan.Stops[NextStop - 1], Station))
         return FailRoute(TEXT("Occupied station was removed, moved or became invalid"));
     CurrentStation = Station.Name;
     Wait = FMath::Max(0.0, Station.DwellSeconds - ElapsedDwell);
@@ -101,7 +98,7 @@ void ARailwayTrain::ArriveAtTarget(uint32 ExpectedRevision)
         return;
     }
     FRailwayStation Station;
-    if (!Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop], Station))
+    if (!ResolvePlannedStop(ActivePlan.Stops[NextStop], Station))
     {
         FailRoute(TEXT("Cannot arrive at a removed, moved or invalid station"));
         return;

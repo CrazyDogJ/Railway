@@ -2,17 +2,15 @@
 
 #include "Algo/BinarySearch.h"
 #include "Components/SceneComponent.h"
-#include "Components/SplineComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Railway.h"
 #include "RailwayRouteGeometry.h"
 #include "RailwayRoutePlanner.h"
-#include "RailwayPathfinding.h"
-#include "RailwayTrack.h"
+#include "RailwayDataActor.h"
+#include "EngineUtils.h"
 #include "RailwayTrackPlacement.h"
-#include "RailwayWorldIndex.h"
 #include "UObject/ConstructorHelpers.h"
 #if WITH_EDITOR
 #include "UObject/Script.h"
@@ -31,15 +29,39 @@ ARailwayTrain::ARailwayTrain()
     Body->SetRelativeLocation(FVector(0, 0, 50));
 
     bReplicates = true;
-    SetReplicateMovement(false);
+    bIsSpatiallyLoaded = false;
+    SetReplicatingMovement(false);
+}
+
+ARailwayDataActor* ARailwayTrain::GetRailwayData() const
+{
+    if (RailwayData) return IsValid(RailwayData) && RailwayData->GetWorld() == GetWorld() ? RailwayData.Get() : nullptr;
+    if (CachedRailwayData.IsValid()) return CachedRailwayData.Get();
+    if (!GetWorld()) return nullptr;
+    ARailwayDataActor* SameLevel = nullptr;
+    ARailwayDataActor* Candidate = nullptr;
+    int32 Count = 0;
+    for (TActorIterator<ARailwayDataActor> It(GetWorld()); It; ++It)
+    {
+        Candidate = *It;
+        ++Count;
+        if (Candidate->GetLevel() == GetLevel())
+        {
+            if (SameLevel) return nullptr;
+            SameLevel = Candidate;
+        }
+    }
+    CachedRailwayData = SameLevel ? SameLevel : (Count == 1 ? Candidate : nullptr);
+    return CachedRailwayData.Get();
 }
 
 bool ARailwayTrain::GetPreviewLocation_Implementation(FRailwayLeg& PreviewLeg, double& TrackDistance) const
 {
     PreviewLeg = Route.IsEmpty() ? FRailwayLeg() : Route[0];
     TrackDistance = 0;
-    if (!IsValid(PreviewLeg.Track) || !IsValid(PreviewLeg.Track->Spline)) return false;
-    if (PreviewLeg.bReverse) TrackDistance = PreviewLeg.Track->Spline->GetSplineLength();
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (!Data || !Data->Network.Edges.IsValidIndex(PreviewLeg.EdgeIndex)) return false;
+    TrackDistance = Data->Network.Edges[PreviewLeg.EdgeIndex].StartDistance;
     return true;
 }
 
@@ -49,13 +71,12 @@ void ARailwayTrain::RefreshPreview()
     FEditorScriptExecutionGuard ScriptGuard;
     FRailwayLeg First;
     double Local = 0;
-    if (!GetPreviewLocation(First, Local) || !IsValid(First.Track) || !IsValid(First.Track->Spline) || !FMath::IsFinite(Local))
-    {
-        Railway::Placement::DetachFromTrack(*this);
-        return;
-    }
-    Railway::Placement::AttachToSpline(*this, *First.Track->Spline);
-    Railway::Placement::ApplyPose(*this, Railway::Geometry::SampleTrack(First, Local));
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (!Data || !GetPreviewLocation(First, Local) || !Data->Network.Edges.IsValidIndex(First.EdgeIndex)) return;
+    const FRailwayEdge& Edge = Data->Network.Edges[First.EdgeIndex];
+    FTransform Pose;
+    if (Data->SampleTrack({Edge.TrackIndex, Local}, Edge.IsReverse(), Pose))
+        Railway::Placement::ApplyPose(*this, Pose);
 }
 
 void ARailwayTrain::OnConstruction(const FTransform& Transform)
@@ -99,7 +120,7 @@ FName ARailwayTrain::GetStationForState(ERailwayState InState) const
 {
     FRailwayStation Current;
     if (InState == ERailwayState::Dwelling && ActivePlan.Stops.IsValidIndex(NextStop - 1) &&
-        Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop - 1], Current)) return Current.Name;
+        ResolvePlannedStop(ActivePlan.Stops[NextStop - 1], Current)) return Current.Name;
     return NAME_None;
 }
 
@@ -149,10 +170,6 @@ bool ARailwayTrain::FailRoute(const FString& Reason)
 bool ARailwayTrain::StartRoute()
 {
     if (!HasAuthority()) return false;
-    for (const FRailwayLeg& Part : Route)
-    {
-        if (IsValid(Part.Track)) Part.Track->AlignEndpoints(false);
-    }
     FRailwayPlan Plan;
     FString Error;
     if (!BuildRoutePlan(Route, Plan, Error) || !RestartPreparedRouteAtDistance(Plan, 0, Error)) return FailRoute(Error);
@@ -161,33 +178,27 @@ bool ARailwayTrain::StartRoute()
 
 bool ARailwayTrain::BuildRoutePlan(const TArray<FRailwayLeg>& Legs, FRailwayPlan& OutPlan, FString& OutError) const
 {
-    return Railway::Routing::Build(GetWorld(), Legs, TOptional<double>(), OutPlan, OutError);
+    return Railway::Routing::Build(GetRailwayData(), Legs, TOptional<double>(), OutPlan, OutError);
 }
 
 bool ARailwayTrain::FindRoutePlan(const FRailwayTrackLocation& Start, const FRailwayTrackLocation& Destination,
     FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations) const
 {
-    return Railway::Routing::FindPath(GetWorld(), Start, Destination, bStopAtIntermediateStations, OutPlan, OutError);
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (Data) return Data->FindRoutePlan(Start, Destination, OutPlan, OutError, bStopAtIntermediateStations);
+    OutPlan = {};
+    OutError = TEXT("Select or build this level's railway data");
+    return false;
 }
 
-bool ARailwayTrain::FindRoutePlanToStation(const FRailwayTrackLocation& Start, ARailwayStationMarker* DestinationStation,
+bool ARailwayTrain::FindRoutePlanToStation(const FRailwayTrackLocation& Start, int32 StationIndex,
     FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations) const
 {
-    if (!IsValid(DestinationStation) || DestinationStation->GetWorld() != GetWorld())
-    {
-        OutPlan = FRailwayPlan();
-        OutError = TEXT("Select a destination station in this world");
-        return false;
-    }
-    return Railway::Routing::FindPathToStation(GetWorld(), Start, DestinationStation->HostTrack,
-        ERailwayStationSource::Marker, DestinationStation->RailwayId, bStopAtIntermediateStations, OutPlan, OutError);
-}
-
-bool ARailwayTrain::FindRoutePlanToTrackStation(const FRailwayTrackLocation& Start, ARailwayTrack* DestinationTrack,
-    FGuid StationId, FRailwayPlan& OutPlan, FString& OutError, bool bStopAtIntermediateStations) const
-{
-    return Railway::Routing::FindPathToStation(GetWorld(), Start, DestinationTrack,
-        ERailwayStationSource::TrackStation, StationId, bStopAtIntermediateStations, OutPlan, OutError);
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (Data) return Data->FindRoutePlanToStation(Start, StationIndex, OutPlan, OutError, bStopAtIntermediateStations);
+    OutPlan = {};
+    OutError = TEXT("Select or build this level's railway data");
+    return false;
 }
 
 bool ARailwayTrain::StartPreparedRoute(const FRailwayPlan& Plan, double StartDistance, FString& OutError)
@@ -204,7 +215,7 @@ bool ARailwayTrain::RestartPreparedRouteAtDistance(const FRailwayPlan& Plan, dou
         return false;
     }
     FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetWorld(), Plan, StartDistance, Prepared, OutError)) return false;
+    if (!Railway::Routing::Prepare(GetRailwayData(), Plan, StartDistance, Prepared, OutError)) return false;
     // 严格小于起点的站才算跳过，恰好在起点的多个站仍按顺序服务。
     const int32 StopCursor = Algo::LowerBoundBy(Prepared.Plan.Stops, StartDistance, &FRailwayPlannedStop::Distance);
     const bool bAlreadyAtDestination = Prepared.SectionEnds.Last() == 0.0 && Prepared.Plan.Stops.IsEmpty();
@@ -222,7 +233,6 @@ void ARailwayTrain::ActivatePlan(FRailwayPreparedPlan&& Prepared, int32 StopCurs
     Leg = Prepared.StartSection;
     NextStop = StopCursor;
     CurrentStation = GetStationForState(NewState);
-    Railway::Placement::DetachFromTrack(*this);
     Railway::Placement::ApplyPose(*this, Prepared.StartPose);
     UpdateVelocity();
     SetState(NewState);
@@ -253,7 +263,7 @@ bool ARailwayTrain::GoDirectToStop(int32 DestinationStopIndex, FString& OutError
     MakeDirectPlan(ActivePlan, DestinationStopIndex, Direct);
     // 裁剪停站表不会改变几何；这里的累计里程仍属于同一组区间。
     FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetWorld(), MoveTemp(Direct), Distance, Prepared, OutError)) return false;
+    if (!Railway::Routing::Prepare(GetRailwayData(), MoveTemp(Direct), Distance, Prepared, OutError)) return false;
     return ContinuePreparedPlan(MoveTemp(Prepared), false, OutError);
 }
 
@@ -267,23 +277,24 @@ bool ARailwayTrain::ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FSt
     }
     int32 SectionIndex;
     double Local;
-    if (!Railway::Geometry::Locate(ActivePlan, SectionEnds, Distance, SectionIndex, Local))
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (!Data || !Railway::Geometry::Locate(Data->Network, ActivePlan, SectionEnds, Distance, SectionIndex, Local))
     {
         OutError = TEXT("Cannot locate the train on its current track");
         return false;
     }
     const FRailwayLeg& Current = ActivePlan.Sections[SectionIndex].Leg;
-    if (NewLegs[0].Track != Current.Track || NewLegs[0].bReverse != Current.bReverse)
+    if (NewLegs[0].EdgeIndex != Current.EdgeIndex)
     {
         OutError = TEXT("The first leg must match the occupied track and direction");
         return false;
     }
     FRailwayPlan RemainingPlan;
-    if (!Railway::Routing::Build(GetWorld(), NewLegs, TOptional<double>(Local), RemainingPlan, OutError)) return false;
+    if (!Railway::Routing::Build(GetRailwayData(), NewLegs, TOptional<double>(Local), RemainingPlan, OutError)) return false;
 
     // Build 已将占用点裁为剩余行程的起点，含恰好在岔口换轨的情况。
     FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(GetWorld(), MoveTemp(RemainingPlan), 0, Prepared, OutError) ||
+    if (!Railway::Routing::Prepare(GetRailwayData(), MoveTemp(RemainingPlan), 0, Prepared, OutError) ||
         !ContinuePreparedPlan(MoveTemp(Prepared), true, OutError)) return false;
     Route = NewLegs;
     return true;
@@ -299,28 +310,26 @@ void ARailwayTrain::GetNextStopInfo(double& OutDistanceRemain, FRailwayStation& 
 
 bool ARailwayTrain::ResolvePlannedStop(const FRailwayPlannedStop& Stop, FRailwayStation& OutStation) const
 {
-    if (Railway::Stations::Read(GetWorld(), Stop, OutStation)) return true;
-    // 刚反序列化的引用尚未绑定。只在这种情况下按世界 ID 查找，正常运行直接使用已绑定对象。
-    if (Stop.Reference.Source != ERailwayStationSource::Inline &&
-        (!IsValid(Stop.Reference.SourceActor) || Stop.Reference.PlannedTrackDistance == -1))
+    const ARailwayDataActor* Data = GetRailwayData();
+    if (Data && Data->Network.Stations.IsValidIndex(Stop.StationIndex))
     {
-        FRailwayPlannedStop Bound = Stop;
-        FString Error;
-        const FRailwayWorldIndex WorldIndex(GetWorld());
-        if (WorldIndex.BindStop(Bound, Error) && Railway::Stations::Read(GetWorld(), Bound, OutStation)) return true;
+        OutStation = Data->Network.Stations[Stop.StationIndex].Definition;
+        return true;
     }
     OutStation = FRailwayStation();
     return false;
 }
 
-bool ARailwayTrain::SamplePlan(const FRailwayPlan& Plan, double RouteDistance, int32& SectionIndex, double& TrackDistance, FTransform& Pose)
+bool ARailwayTrain::SamplePlan(const FRailwayPlan& Plan, double RouteDistance, int32& SectionIndex, double& TrackDistance, FTransform& Pose) const
 {
-    return Railway::Geometry::SamplePlan(Plan, RouteDistance, SectionIndex, TrackDistance, Pose);
+    TArray<double> Ends;
+    Railway::Geometry::BuildSectionEnds(Plan, Ends);
+    return Railway::Geometry::Sample(GetRailwayData(), Plan, Ends, RouteDistance, SectionIndex, TrackDistance, Pose);
 }
 
 bool ARailwayTrain::SampleRoute(double RouteDistance, int32& SectionIndex, double& TrackDistance, FTransform& Pose) const
 {
-    return Railway::Geometry::SampleIndexedPlan(ActivePlan, SectionEnds, RouteDistance, SectionIndex, TrackDistance, Pose);
+    return Railway::Geometry::Sample(GetRailwayData(), ActivePlan, SectionEnds, RouteDistance, SectionIndex, TrackDistance, Pose);
 }
 
 bool ARailwayTrain::UpdatePose()
@@ -351,16 +360,6 @@ void ARailwayTrain::Tick(float DeltaSeconds)
             DriveInput < 0.f && BrakeInput == 0.f && Distance > 0 && !ActivePlan.Sections.IsEmpty())
             SetState(ERailwayState::Running);
         if (State == ERailwayState::Dwelling && !RefreshDwell()) return;
-        if (State == ERailwayState::Running && ActivePlan.Stops.IsValidIndex(NextStop))
-        {
-            FRailwayStation Upcoming;
-            if (!Railway::Stations::Read(GetWorld(), ActivePlan.Stops[NextStop], Upcoming))
-            {
-                FailRoute(FString::Printf(TEXT("Upcoming station %s was removed, moved or became invalid"),
-                    *ActivePlan.Stops[NextStop].Reference.StationId.ToString()));
-                return;
-            }
-        }
         // 权威模拟以至多 1/60 秒的子步推进，避免低帧率时越过站点。
         double Left = DeltaSeconds;
         while (Left > 0 && IsInService())

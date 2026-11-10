@@ -69,7 +69,6 @@ void ARailwayTrain::TickClientPresentation()
         FTransform Pose;
         double TrackDistance;
         if (!SampleRoute(Sample.Distance, SectionIndex, TrackDistance, Pose)) return;
-        Railway::Placement::DetachFromTrack(*this);
         Railway::Placement::ApplyPose(*this, Pose);
     }
     else if (Sample.State != ERailwayState::Idle && Sample.State != ERailwayState::InvalidRoute)
