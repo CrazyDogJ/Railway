@@ -110,6 +110,16 @@ void SRailwayPlanPanel::Construct(const FArguments& Args)
                 [ SNew(SBox).HeightOverride(5)[SAssignNew(Progress, SProgressBar).FillColorAndOpacity(Accent)] ]
                 + SVerticalBox::Slot().AutoHeight()[Destination.ToSharedRef()]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, 3, 0, 8)[Next.ToSharedRef()]
+                + SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+                [
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot().AutoWidth()[SNew(SComboButton)
+                        .OnGetMenuContent(this, &SRailwayPlanPanel::TurnoutMenu, false)
+                        .ButtonContent()[Label(TEXT("车头方向选线"))]]
+                    + SHorizontalBox::Slot().AutoWidth().Padding(6, 0)[SNew(SComboButton)
+                        .OnGetMenuContent(this, &SRailwayPlanPanel::TurnoutMenu, true)
+                        .ButtonContent()[Label(TEXT("车尾方向选线"))]]
+                ]
                 + SVerticalBox::Slot().FillHeight(1)
                 [
                     SNew(SScrollBox)
@@ -136,7 +146,7 @@ void SRailwayPlanPanel::Construct(const FArguments& Args)
                         + SVerticalBox::Slot().AutoHeight().Padding(0, 7, 0, 3)
                         [
                             SNew(SCheckBox)
-                            .Visibility_Lambda([this]{ return Train() && Train()->State != ERailwayState::Running && Train()->State != ERailwayState::Dwelling ? EVisibility::Visible : EVisibility::Collapsed; })
+                            .Visibility_Lambda([this]{ return Train() && Train()->Speed == 0 && Train()->State != ERailwayState::Running && Train()->State != ERailwayState::Dwelling ? EVisibility::Visible : EVisibility::Collapsed; })
                             .IsChecked_Lambda([this]{ return bCustomStart ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
                             .OnCheckStateChanged_Lambda([this](ECheckBoxState S){ bCustomStart = S == ECheckBoxState::Checked; })
                             [Label(TEXT("指定新起点发车"))]
@@ -174,7 +184,7 @@ void SRailwayPlanPanel::Construct(const FArguments& Args)
                 [
                     SNew(SHorizontalBox)
                     + SHorizontalBox::Slot().AutoWidth()[ActionButton(TEXT("从预设起点发车"), ERailwayPlanAction::ActivatePreset)]
-                    + SHorizontalBox::Slot().AutoWidth().Padding(8, 0)[ActionButton(TEXT("取消路线并停车"), ERailwayPlanAction::CancelRoute)]
+                    + SHorizontalBox::Slot().AutoWidth().Padding(8, 0)[ActionButton(TEXT("停用运行计划"), ERailwayPlanAction::CancelRoute)]
                 ]
                 + SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)[Notice.ToSharedRef()]
             ]
@@ -299,6 +309,32 @@ TSharedRef<SWidget> SRailwayPlanPanel::PointPicker(bool bDeparture)
         ];
 }
 
+TSharedRef<SWidget> SRailwayPlanPanel::TurnoutMenu(bool bTowardsRear)
+{
+    TArray<FRailwayTrackChoice> Choices;
+    if (auto* T = Train()) T->GetUpcomingTrackChoices(bTowardsRear, Choices);
+    if (Choices.IsEmpty()) return Label(TEXT("该方向没有可切换的道岔"));
+    FMenuBuilder Menu(true, nullptr);
+    Menu.BeginSection("Turnout", Text(FString::Printf(TEXT("距道岔 %s"), *Metres(Choices[0].DistanceToJunction))));
+    for (const auto& C : Choices)
+    {
+        auto Cmd = MakeCommand(C.bActive ? ERailwayPlanAction::DeactivateTrack : ERailwayPlanAction::ActivateTrack);
+        Cmd.ExpectedRevision = C.View.Revision;
+        Cmd.BuildId = C.View.BuildId;
+        Cmd.ApproachEdge = C.ApproachEdge;
+        Cmd.OutgoingEdge = C.OutgoingEdge;
+        Cmd.ExpectedSelectedEdge = C.SelectedEdge;
+        Cmd.bTowardsRear = C.bTowardsRear;
+        Menu.AddMenuEntry(Text(FString::Printf(TEXT("%s  ·  %s%s"), *C.TrackName.ToString(),
+            C.bContinuesSameTrack ? TEXT("本线") : TEXT("转线"), C.bActive ? TEXT("  ✓") : TEXT(""))),
+            Text(C.bActive ? TEXT("停用此出口并改走其他合法轨道") : TEXT("激活此出口；与班次冲突时停用计划")),
+            FSlateIcon(), FUIAction(FExecuteAction::CreateSPLambda(SharedThis(this), [this, Cmd]{ Submit(Cmd); }),
+                FCanExecuteAction::CreateSP(this, &SRailwayPlanPanel::CanSend)));
+    }
+    Menu.EndSection();
+    return Menu.MakeWidget();
+}
+
 TSharedRef<SWidget> SRailwayPlanPanel::PointMenu(bool bDeparture)
 {
     FMenuBuilder Menu(true, nullptr);
@@ -358,7 +394,7 @@ void SRailwayPlanPanel::Refresh()
     Cursor = NewCursor;
     DisplayState = NewState;
     bReady = Ready;
-    if (T && (T->State == ERailwayState::Running || T->State == ERailwayState::Dwelling)) bCustomStart = false;
+    if (T && (T->Speed != 0 || T->State == ERailwayState::Running || T->State == ERailwayState::Dwelling)) bCustomStart = false;
     if (SelectedDeparture.IsValid() && bChanged)
     {
         DepartureLabel = Data ? SourceName(Data->Network, SelectedDeparture) : FString();
@@ -372,7 +408,7 @@ void SRailwayPlanPanel::Refresh()
     if (bChanged || Visits->NumSlots() == 0) RebuildRows();
     Title->SetText(Text(T ? T->GetActorNameOrLabel() : TEXT("列车运行计划")));
     Status->SetText(Text(!T ? TEXT("未绑定列车") : !Data ? TEXT("未找到铁路数据") :
-        !Ready ? TEXT("等待计划同步") : StateName(T->State)));
+        !Ready ? TEXT("等待计划同步") : (Overview.bCoastingWithoutPlan ? TEXT("无计划惰行") : (T->State == ERailwayState::Idle && T->DriveMode == ERailwayDriveMode::Manual ? TEXT("自由驾驶") : StateName(T->State)))));
     if (!Ready)
     {
         Motion->SetText(FText::GetEmpty()); Location->SetText(FText::GetEmpty());

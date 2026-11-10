@@ -30,6 +30,36 @@ struct RAILWAY_API FRailwayPlanViewKey
     int64 Revision = -1;
 };
 
+/** One legal exit at the next reachable turnout in the requested cab direction. */
+USTRUCT(BlueprintType)
+struct RAILWAY_API FRailwayTrackChoice
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    FRailwayPlanViewKey View;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    int32 ApproachEdge = INDEX_NONE;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    int32 OutgoingEdge = INDEX_NONE;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    int32 SelectedEdge = INDEX_NONE;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    FName TrackName;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    FGuid TrackId;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    double DistanceToJunction = 0;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    bool bTowardsRear = false;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    bool bContinuesSameTrack = false;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    bool bUsedByCurrentPlan = false;
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    bool bActive = false;
+};
+
 /** A lightweight picker item. A station's Point already targets that station. For a track, set Point.TrackDistance in cm. */
 USTRUCT(BlueprintType)
 struct RAILWAY_API FRailwaySourceOption
@@ -73,6 +103,12 @@ struct RAILWAY_API FRailwayPlanOverview
     double SpeedKmh = 0;
 
     UPROPERTY(BlueprintReadOnly, Category="Railway")
+    bool bCabFacesAgainstPlan = false;
+
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    bool bCoastingWithoutPlan = false;
+
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
     bool bHasService = false;
 
     UPROPERTY(BlueprintReadOnly, Category="Railway")
@@ -92,6 +128,9 @@ struct RAILWAY_API FRailwayPlanOverview
 
     UPROPERTY(BlueprintReadOnly, Category="Railway")
     FName CurrentTrack;
+
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
+    FGuid CurrentTrackId;
 
     UPROPERTY(BlueprintReadOnly, Category="Railway")
     double CurrentTrackDistance = 0;

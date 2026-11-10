@@ -94,7 +94,8 @@ UWidgetBlueprint* MakeTestWidget()
 
     // Use the engine's real latent K2 nodes so compiler expansion, pin types and result delegates are exercised.
     for (const TCHAR* Action : {TEXT("ActivateRailwayPreset"), TEXT("CancelRailwayRoute"), TEXT("SkipRailwayVisit"),
-        TEXT("AddRailwayVisit"), TEXT("GoDirectToRailwayVisit"), TEXT("SetRailwayDestination"), TEXT("StartRailwayBetweenPoints")})
+        TEXT("AddRailwayVisit"), TEXT("GoDirectToRailwayVisit"), TEXT("SetRailwayDestination"), TEXT("StartRailwayBetweenPoints"),
+        TEXT("ActivateRailwayTrack"), TEXT("DeactivateRailwayTrack")})
     {
         auto* Event = AddEvent(Graph, FName(*(FString(TEXT("Do")) + Action)));
         auto* Async = NewNode<UK2Node_AsyncAction>(Graph);
@@ -138,7 +139,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FRailwayBlueprintWidgetTest, "Railway.Dispatch.
 bool FRailwayBlueprintWidgetTest::RunTest(const FString&)
 {
     auto* BP = MakeTestWidget();
-    if (!TestTrue(TEXT("Ordinary Widget Blueprint compiles all seven async actions"), BP->Status == BS_UpToDate)) return false;
+    if (!TestTrue(TEXT("Ordinary Widget Blueprint compiles all dispatch actions"), BP->Status == BS_UpToDate)) return false;
     UE::Net::FTestWorlds Worlds;
     if (!TestTrue(TEXT("Connect player"), Worlds.CreateAndConnectClient())) return false;
     UWorld* Server = Worlds.Server.GetWorld();

@@ -48,29 +48,31 @@ void ARailwayTrain::GetPossiblePlanStops(TArray<FRailwayPlannedStop>& OutStops) 
     OutStops = MoveTemp(Along.Stops);
 }
 
-bool ARailwayTrain::CancelService(FString& Error)
+bool ARailwayTrain::CancelService(FString& Error, int32 SwitchApproach, int32 SwitchExit)
 {
     if (State == ERailwayState::Idle || ActivePlan.Sections.IsEmpty())
     {
         Error = TEXT("没有正在执行的路线");
         return false;
     }
-    const ARailwayDataActor* Data = GetRailwayData();
-    int32 Section;
+    int32 CabEdge;
     double Local;
-    if (!Data || !Railway::Geometry::Locate(Data->Network, ActivePlan, SectionEnds, Distance, Section, Local))
+    if (!GetCabEdge(CabEdge, Local)) { Error = TEXT("无法定位列车"); return false; }
+    TArray<FRailwayTrackChoice> Ahead;
+    GetUpcomingTrackChoices(Speed < 0 || (Speed == 0 && ActivePlan.bCabReversed), Ahead);
+    if (!SetFreeEdge(CabEdge, Local)) { Error = TEXT("无法进入自由驾驶"); return false; }
+    const auto& N = GetRailwayData()->Network;
+    if (!Ahead.IsEmpty()) RememberExit(N, Ahead[0].ApproachEdge, Ahead[0].SelectedEdge);
+    if (SwitchApproach != INDEX_NONE)
     {
-        Error = TEXT("无法定位列车");
-        return false;
+        RememberExit(N, SwitchApproach, SwitchExit);
+        RememberExit(N, SwitchExit ^ 1, SwitchApproach ^ 1);
     }
-    // Keep an explicit parking pose for late-joining clients, saves and the next reroute.
-    FRailwayPlan Parked;
-    Parked.BuildId = Data->Network.BuildId;
-    Parked.Sections.Add({ActivePlan.Sections[Section].Leg, Local, 0});
-    FRailwayPreparedPlan Prepared;
-    if (!Railway::Routing::Prepare(Data, MoveTemp(Parked), 0, Prepared, Error)) return false;
-    ResetMotion();
-    ActivatePlan(MoveTemp(Prepared), 0, ERailwayState::Idle);
+    Wait = ElapsedDwell = 0;
+    bPreLeaveSent = false;
+    CurrentStation = NAME_None;
+    SetState(ERailwayState::Idle);
+    PublishMoveState(true);
     return true;
 }
 
@@ -142,9 +144,9 @@ bool ARailwayTrain::ApplyPlayerPlanCommand(APlayerController* Player, const FRai
     }
     case ERailwayPlanAction::StartBetweenPoints:
     {
-        if (IsInService())
+        if (IsInService() || Speed != 0)
         {
-            Error = TEXT("请先取消正在执行的路线，再从指定起点发车");
+            Error = TEXT("请先停用计划并停稳，再从指定起点发车");
             return false;
         }
         FRailwayRouteSettings Settings;
@@ -154,6 +156,8 @@ bool ARailwayTrain::ApplyPlayerPlanCommand(APlayerController* Player, const FRai
         FRailwayPlan Plan;
         return CompileRouteSettings(Settings, Plan, Error) && RestartPreparedRouteAtDistance(Plan, 0, Error);
     }
+    case ERailwayPlanAction::ActivateTrack:
+    case ERailwayPlanAction::DeactivateTrack: return ChangeTurnout(Command, Error);
     case ERailwayPlanAction::CancelRoute: return CancelService(Error);
     case ERailwayPlanAction::SkipStop:
     case ERailwayPlanAction::DirectToStop:
@@ -171,7 +175,7 @@ bool ARailwayTrain::ApplyPlayerPlanCommand(APlayerController* Player, const FRai
         const bool bFound = Station == INDEX_NONE
             ? Data->FindRoutePlan(Start, Goal, Plan, Error, Command.bStopAlongWay)
             : Data->FindRoutePlanToStation(Start, Station, Plan, Error, Command.bStopAlongWay);
-        return bFound && StartPreparedRoute(Plan, 0, Error);
+        return bFound && ReplacePreparedRoute(Plan, Error, 0);
     }
     }
     Error = TEXT("未知调度操作");

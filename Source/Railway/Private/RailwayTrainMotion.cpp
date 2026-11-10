@@ -27,12 +27,16 @@ double ARailwayTrain::CalculateDriverTargetSpeed(double SpeedLimit, double Delta
 {
     if (DriveMode == ERailwayDriveMode::Manual)
     {
+        if (DriveInput == 0)
+            return FMath::Sign(Speed) * FMath::Max(0.0, FMath::Abs(Speed) - FMath::Max(0.f, RollingResistance) * DeltaSeconds);
         const double Traction = DriveInput * FMath::Max(1.f, Acceleration);
         return FMath::Clamp(Speed + Traction * DeltaSeconds, -SpeedLimit, SpeedLimit);
     }
-    if (Speed < 0.f) return 0.0; // 切回自动时先消除倒车速度，再沿计划方向牵引。
+    const double CabSign = ActivePlan.bCabReversed ? -1.0 : 1.0;
+    const double PathSpeed = CabSign * Speed;
+    if (PathSpeed < 0) return 0.0;
     const double Response = 1.0 - FMath::Exp(-DeltaSeconds / FMath::Max(.01f, ResponseTime));
-    return Speed + (SpeedLimit - Speed) * Response;
+    return CabSign * (PathSpeed + (SpeedLimit - PathSpeed) * Response);
 }
 
 bool ARailwayTrain::RefreshDwell()
@@ -123,6 +127,8 @@ void ARailwayTrain::Step(double DeltaSeconds)
     const double Brake = FMath::Max(1.f, Braking);
     const double BrakeStep = Brake * DeltaSeconds;
     const double SpeedLimit = FMath::Max(0.f, ExternalSpeedLimit >= 0.f ? FMath::Min(ExternalSpeedLimit, CruiseSpeed) : CruiseSpeed);
+    const double CabSign = ActivePlan.bCabReversed ? -1.0 : 1.0;
+    const double PathSpeed = CabSign * Speed;
     const double Magnitude = FMath::Abs(Speed);
     const bool bManual = DriveMode == ERailwayDriveMode::Manual;
     double RequestedSpeed;
@@ -130,17 +136,17 @@ void ARailwayTrain::Step(double DeltaSeconds)
     {
         // 踩下制动时切断牵引，只减小速度绝对值；即使持续踩住也不会越过零速。
         const double AfterBraking = FMath::Max(0.0, Magnitude - BrakeInput * BrakeStep);
-        RequestedSpeed = FMath::Sign(Speed) * FMath::Min(AfterBraking, SpeedLimit);
+        RequestedSpeed = FMath::Sign(PathSpeed) * FMath::Min(AfterBraking, SpeedLimit);
     }
     else
     {
-        RequestedSpeed = CalculateDriverTargetSpeed(SpeedLimit, DeltaSeconds);
+        RequestedSpeed = CabSign * CalculateDriverTargetSpeed(SpeedLimit, DeltaSeconds);
         if (!bManual) RequestedSpeed = FMath::Max(0.0, RequestedSpeed);
     }
 
-    // 换向先按实际运动方向减速至零，再在下一子步反向起步，车身始终按路线朝向采样。
-    const bool bReverseFromRest = RequestedSpeed < 0.0 || (RequestedSpeed == 0.0 && bManual && DriveInput < 0.f);
-    const bool bBacking = GetRouteLength() > 0.0 && (Speed < 0.f || (Speed == 0.f && bReverseFromRest));
+    // Integrate in route coordinates; traction, published speed and the cab remain in body coordinates.
+    const bool bReverseFromRest = RequestedSpeed < 0.0 || (RequestedSpeed == 0.0 && bManual && CabSign * DriveInput < 0.f);
+    const bool bBacking = GetRouteLength() > 0.0 && (PathSpeed < 0.0 || (PathSpeed == 0.0 && bReverseFromRest));
     const double Direction = bBacking ? -1.0 : 1.0;
     double Target = 0.0;
     if (!bBacking)
@@ -152,7 +158,7 @@ void ARailwayTrain::Step(double DeltaSeconds)
     const double SafeSpeed = FMath::Sqrt(BrakeStep * BrakeStep + 2.0 * Brake * Remaining) - BrakeStep;
     const double DesiredMagnitude = FMath::Clamp(Direction * RequestedSpeed, 0.0, SafeSpeed);
     const double SpeedChange = FMath::Clamp(DesiredMagnitude - Magnitude, -BrakeStep, FMath::Max(1.f, Acceleration) * DeltaSeconds);
-    Speed = static_cast<float>(Direction * (Magnitude + SpeedChange));
+    Speed = static_cast<float>(CabSign * Direction * (Magnitude + SpeedChange));
     const double Travel = FMath::Min(Remaining, FMath::Abs(Speed) * DeltaSeconds);
     Distance += Direction * Travel;
 

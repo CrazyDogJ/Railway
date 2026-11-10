@@ -27,6 +27,7 @@ private:
     FRailwayPlanCommand MakeCommand(ERailwayPlanAction Action) const;
     FReply Submit(FRailwayPlanCommand Command);
     TSharedRef<SWidget> PointMenu(bool bDeparture);
+    TSharedRef<SWidget> TurnoutMenu(bool bTowardsRear);
     TSharedRef<SWidget> PointPicker(bool bDeparture);
     void OnReply(FGuid Request, bool bSuccess, const FString& Message);
     void Feedback(const FString& Text, bool bError);

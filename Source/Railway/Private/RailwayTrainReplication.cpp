@@ -12,6 +12,7 @@ void ARailwayTrain::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
     DOREPLIFETIME(ThisClass, ActivePlan);
     DOREPLIFETIME(ThisClass, TrainMoveState);
     DOREPLIFETIME(ThisClass, DriveMode);
+    DOREPLIFETIME(ThisClass, Turnouts);
     DOREPLIFETIME(ThisClass, DriveInput);
     DOREPLIFETIME(ThisClass, BrakeInput);
 }
@@ -19,6 +20,8 @@ void ARailwayTrain::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLif
 void ARailwayTrain::PublishMoveState(bool bForce)
 {
     if (!HasAuthority()) return;
+    const bool bTrackChanged = NotifiedPlanRevision != ActivePlan.NetworkRevision || NotifiedLeg != Leg;
+    NotifiedLeg = Leg;
     if (NotifiedPlanRevision != ActivePlan.NetworkRevision || NotifiedStop != NextStop || NotifiedState != State)
     {
         NotifiedPlanRevision = ActivePlan.NetworkRevision;
@@ -26,6 +29,7 @@ void ARailwayTrain::PublishMoveState(bool bForce)
         NotifiedState = State;
         OnRailwayTimetableChanged.Broadcast();
     }
+    if (bTrackChanged) OnRailwayTrackChanged.Broadcast();
     if (GetNetMode() == NM_Standalone) return;
     const double Now = GetWorld()->GetTimeSeconds();
     const double DwellEnd = State == ERailwayState::Dwelling ? Now + Wait : 0;
@@ -36,8 +40,10 @@ void ARailwayTrain::PublishMoveState(bool bForce)
         TrainMoveState.StationName != CurrentStation || bDwellEdited;
 
     // 巡航按配置的频率发送；换线和停站游标变化立即发送。
+    const bool bSendMotion = State == ERailwayState::Running ||
+        (State == ERailwayState::Idle && (Speed != 0 || TrainMoveState.Speed != Speed || TrainMoveState.Distance != Distance));
     if (!bForce && !bTransition &&
-        (State != ERailwayState::Running || Now - TrainMoveState.ServerTime < 1.0 / FMath::Clamp(SnapshotRateHz, 1.f, 60.f)))
+        (!bSendMotion || Now - TrainMoveState.ServerTime < 1.0 / FMath::Clamp(SnapshotRateHz, 1.f, 60.f)))
         return;
 
     TrainMoveState.PlanRevision = ActivePlan.NetworkRevision;
@@ -86,6 +92,7 @@ void ARailwayTrain::TickClientPresentation()
         return;
     }
 
+    const bool bTrackChanged = PresentedPlanRevision != Sample.PlanRevision || Leg != SectionIndex;
     const bool bNewTimetable = PresentedPlanRevision != Sample.PlanRevision || NextStop != Sample.NextStop || State != Sample.State;
     MoveBuffer.MarkPresented(Sample.ServerTime);
     PresentedPlanRevision = Sample.PlanRevision;
@@ -99,4 +106,5 @@ void ARailwayTrain::TickClientPresentation()
     UpdateVelocity();
     SetState(Sample.State);
     if (bNewTimetable) OnRailwayTimetableChanged.Broadcast();
+    if (bTrackChanged) OnRailwayTrackChanged.Broadcast();
 }

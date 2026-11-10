@@ -179,6 +179,7 @@ bool Remap(const ARailwayDataActor& Actor, const FRailwayTrainSaveGame& Save,
     }
     Plan = {};
     Plan.BuildId = Data.BuildId;
+    Plan.bCabReversed = Save.RailwayPlan.bCabReversed;
     Plan.bFinishAtLastStop = Save.RailwayPlan.bFinishAtLastStop;
     TArray<FResolvedPass> Passes;
     double Total = 0;

@@ -41,7 +41,7 @@ bool Sample(const ARailwayDataActor* Data, const FRailwayPlan& Plan, const TArra
     TrackDistance = 0;
     if (!Data || !Locate(Data->Network, Plan, Ends, Distance, SectionIndex, TrackDistance)) return false;
     const FRailwayEdge& Edge = Data->Network.Edges[Plan.Sections[SectionIndex].Leg.EdgeIndex];
-    return Data->SampleTrack({Edge.TrackIndex, TrackDistance}, Edge.IsReverse(), Pose);
+    return Data->SampleTrack({Edge.TrackIndex, TrackDistance}, Edge.IsReverse() != Plan.bCabReversed, Pose);
 }
 
 bool FindPlanDistance(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TArray<double>& Ends,

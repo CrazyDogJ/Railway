@@ -212,7 +212,7 @@ bool FRailwayPlayerPanelTest::RunTest(const FString&)
         return ServerTrain->ActivePlan.Stops.Num() == 2 && Train->ActivePlan.Stops.Num() == 2 && Train->IsPlanPresentationCurrent();
     }, 240))) return false;
     Widget->SetTrain(Train);
-    auto Cancel = FindButton(Root, TEXT("取消路线并停车"));
+    auto Cancel = FindButton(Root, TEXT("停用运行计划"));
     if (!TestTrue(TEXT("Cancel enabled"), Cancel && Cancel->IsEnabled())) return false;
     Cancel->SimulateClick();
     TestTrue(TEXT("Both peers present parked state"), Worlds.TickUntil([&]

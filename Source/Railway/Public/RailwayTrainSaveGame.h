@@ -112,6 +112,9 @@ struct RAILWAY_API FRailwayTrainSaveGame
     UPROPERTY(SaveGame)
     FRailwayRouteBookmark Bookmark;
 
+    UPROPERTY(SaveGame)
+    FRailwayTurnouts Turnouts;
+
     UPROPERTY(BlueprintReadWrite, EditAnywhere, SaveGame)
     double Distance = 0;
 

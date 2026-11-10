@@ -41,10 +41,17 @@ public:
     UFUNCTION(BlueprintCallable, Category="Railway|Player UI", meta=(BlueprintInternalUseOnly="true"))
     static URailwayPlanRequest* StartRailwayBetweenPoints(APlayerController* Player, const FRailwayPlanViewKey& View, const FRailwayRoutePoint& Departure, const FRailwayRoutePoint& Destination, bool bStopAlongWay);
 
+    UFUNCTION(BlueprintCallable, Category="Railway|Driving", meta=(BlueprintInternalUseOnly="true"))
+    static URailwayPlanRequest* ActivateRailwayTrack(APlayerController* Player, const FRailwayTrackChoice& Choice);
+
+    UFUNCTION(BlueprintCallable, Category="Railway|Driving", meta=(BlueprintInternalUseOnly="true"))
+    static URailwayPlanRequest* DeactivateRailwayTrack(APlayerController* Player, const FRailwayTrackChoice& Choice);
+
     virtual void Activate() override;
     virtual void BeginDestroy() override;
 private:
     static URailwayPlanRequest* Make(APlayerController* Player, const FRailwayPlanViewKey& View, ERailwayPlanAction Action);
+    static URailwayPlanRequest* MakeSwitch(APlayerController* Player, const FRailwayTrackChoice& Choice, ERailwayPlanAction Action);
     static URailwayPlanRequest* MakeVisit(APlayerController* Player, const FRailwayVisitView& Visit, ERailwayPlanAction Action);
     void Reply(FGuid Id, bool bSuccess, const FString& Message);
     bool CheckConnection(float Delta);

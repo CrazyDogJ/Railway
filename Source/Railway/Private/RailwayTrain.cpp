@@ -108,7 +108,9 @@ void ARailwayTrain::BeginPlay()
 {
     if (HasAuthority()) SetReplicateMovement(false); // Also override older Blueprint movement defaults.
     Super::BeginPlay();
-    if (HasAuthority() && bAutoStart) StartRoute();
+    const bool bHasPreset = Route.Mode == ERailwayRouteMode::OrderedTracks ? !Route.Tracks.IsEmpty() :
+        (Route.Start.Source.Id.IsValid() || Route.Destination.Source.Id.IsValid());
+    if (HasAuthority() && bAutoStart && bHasPreset) StartRoute();
 }
 
 void ARailwayTrain::SetState(const ERailwayState InState)
@@ -369,8 +371,21 @@ bool ARailwayTrain::UpdatePose()
 {
     FTransform Pose;
     double TrackDistance;
+    const int32 Previous = Leg;
     if (!SampleRoute(Distance, Leg, TrackDistance, Pose))
         return FailRoute(FString::Printf(TEXT("Cannot sample active route at %.2f cm: check track identity, geometry and connections"), Distance));
+    if (Previous != Leg && IsInService() && ActivePlan.Sections.IsValidIndex(Previous))
+    {
+        const auto& N = GetRailwayData()->Network;
+        const int32 StepIndex = Leg > Previous ? 1 : -1;
+        for (int32 I = Previous; I != Leg; I += StepIndex)
+        {
+            const int32 From = ActivePlan.Sections[I].Leg.EdgeIndex ^ int32(StepIndex < 0);
+            const int32 To = ActivePlan.Sections[I + StepIndex].Leg.EdgeIndex ^ int32(StepIndex < 0);
+            RememberExit(N, From, To);
+            RememberExit(N, To ^ 1, From ^ 1);
+        }
+    }
     Railway::Placement::ApplyPose(*this, Pose);
     UpdateVelocity();
     return true;
@@ -390,15 +405,23 @@ void ARailwayTrain::Tick(float DeltaSeconds)
     {
         // 行程结束后仍可沿现有计划退回。制动松开且驾驶员给反向牵引时才恢复运动。
         if (State == ERailwayState::Finished && DriveMode == ERailwayDriveMode::Manual &&
-            DriveInput < 0.f && BrakeInput == 0.f && Distance > 0 && !ActivePlan.Sections.IsEmpty())
+            (ActivePlan.bCabReversed ? -DriveInput : DriveInput) < 0.f && BrakeInput == 0.f && Distance > 0 && !ActivePlan.Sections.IsEmpty())
             SetState(ERailwayState::Running);
         if (State == ERailwayState::Dwelling && !RefreshDwell()) return;
         // 权威模拟以至多 1/60 秒的子步推进，避免低帧率时越过站点。
         double Left = DeltaSeconds;
-        while (Left > 0 && IsInService())
+        while (Left > 0)
         {
             const double Dt = FMath::Min(Left, 1.0 / 60.0);
-            Step(Dt);
+            if (IsInService()) Step(Dt);
+            else if ((State == ERailwayState::Idle || State == ERailwayState::InvalidRoute) &&
+                (Speed != 0 || (DriveMode == ERailwayDriveMode::Manual && DriveInput != 0 && BrakeInput == 0)))
+            {
+                if (State == ERailwayState::InvalidRoute) SetState(ERailwayState::Idle);
+                StepFree(Dt);
+                if (State == ERailwayState::InvalidRoute) break;
+            }
+            else break;
             Left -= Dt;
         }
         PublishMoveState(false);

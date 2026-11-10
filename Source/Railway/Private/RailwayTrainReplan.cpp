@@ -113,12 +113,37 @@ bool ARailwayTrain::GetCurrentTrackLocation(FRailwayTrackLocation& OutLocation) 
 
     FRailwayLeg Preview;
     double Local = 0;
-    if (!GetPreviewLocation(Preview, Local) || !Data->Network.Edges.IsValidIndex(Preview.EdgeIndex)) return false;
-    const FRailwayEdge& Edge = Data->Network.Edges[Preview.EdgeIndex];
-    FTransform Pose;
-    OutLocation = {Edge.TrackIndex, Local};
-    return Data->SampleTrack(OutLocation, Edge.IsReverse(), Pose) &&
-        FVector::Dist(Pose.GetLocation(), GetActorLocation()) <= Railway::Routing::JunctionToleranceCm;
+    if (GetPreviewLocation(Preview, Local) && Data->Network.Edges.IsValidIndex(Preview.EdgeIndex))
+    {
+        const FRailwayEdge& Edge = Data->Network.Edges[Preview.EdgeIndex];
+        FTransform Pose;
+        if (Data->SampleTrack({Edge.TrackIndex, Local}, Edge.IsReverse(), Pose) &&
+            FVector::Dist(Pose.GetLocation(), GetActorLocation()) <= Railway::Routing::JunctionToleranceCm)
+        { OutLocation = {Edge.TrackIndex, Local}; return true; }
+    }
+
+    // A manually placed train can start without a timetable. At intersecting tracks
+    // require an unambiguous match; an explicit preview above disambiguates the crossing.
+    for (int32 I = 0; I < Data->Network.Tracks.Num(); ++I)
+    {
+        const auto& Track = Data->Network.Tracks[I];
+        float Sq;
+        const float Key = Track.Curves.Position.FindNearest(Track.SplineToWorld.InverseTransformPosition(GetActorLocation()), Sq);
+        const auto& Table = Track.Curves.ReparamTable.Points;
+        if (Table.IsEmpty()) continue;
+        const int32 Upper = Algo::LowerBoundBy(Table, Key, [](const auto& P){ return P.OutVal; });
+        double D = Track.Length();
+        if (Upper == 0) D = 0;
+        else if (Upper < Table.Num())
+        {
+            const auto& A = Table[Upper - 1]; const auto& B = Table[Upper];
+            D = B.OutVal > A.OutVal ? FMath::Lerp(A.InVal, B.InVal, (Key - A.OutVal) / (B.OutVal - A.OutVal)) : A.InVal;
+        }
+        if (FVector::Dist(Track.PositionAt(D), GetActorLocation()) > Railway::Routing::JunctionToleranceCm) continue;
+        if (OutLocation.TrackIndex != INDEX_NONE) { OutLocation = {}; return false; }
+        OutLocation = {I, D};
+    }
+    return OutLocation.TrackIndex != INDEX_NONE;
 }
 
 bool ARailwayTrain::ReplacePreparedRoute(const FRailwayPlan& Plan, FString& OutError, int32 SectionHint)
@@ -166,6 +191,14 @@ bool ARailwayTrain::ContinuePreparedPlan(FRailwayPreparedPlan&& Prepared, bool b
         return false;
     }
 
+    // Choose the cab end once for the new route. Never rotate the body to reverse travel.
+    if (FVector::DotProduct(GetActorForwardVector(), Prepared.StartPose.GetRotation().GetForwardVector()) < 0.0)
+    {
+        Prepared.Plan.bCabReversed = !Prepared.Plan.bCabReversed;
+        if (!Prepared.SetStartDistance(Prepared.StartDistance, OutError)) return false;
+    }
+    const double PathSpeed = Prepared.Plan.bCabReversed ? -Speed : Speed;
+    if (PathSpeed < 0 && !AddBrakingRoom(Prepared, PathSpeed * PathSpeed / (2.0 * FMath::Max(1.f, Braking)), OutError)) return false;
     const int32 Cursor = ContinueStopCursor(*this, Prepared, bMatchServedStops);
     if (bDwelling)
     {
@@ -178,10 +211,7 @@ bool ARailwayTrain::ContinuePreparedPlan(FRailwayPreparedPlan&& Prepared, bool b
     const bool bAtEnd = Prepared.StartDistance == Terminus;
     const bool bFinished = !bDwelling && bAtEnd && Cursor == Prepared.Plan.Stops.Num();
 
-    // 新区间朝向相反时，同一世界运动方向在新计划中的速度符号相反。
-    const FVector Forward = Prepared.StartPose.GetRotation().GetForwardVector();
-    if (FVector::DotProduct(GetActorForwardVector(), Forward) < 0) Speed = -Speed;
-    if (bFinished || (Prepared.StartDistance == 0 && Speed < 0) || (bAtEnd && Speed > 0)) Speed = 0.f;
+    if (bFinished) Speed = 0.f;
     if (!bDwelling)
     {
         Wait = 0;

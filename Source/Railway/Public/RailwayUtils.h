@@ -97,6 +97,10 @@ struct RAILWAY_API FRailwayPlan
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
 	TArray<FRailwayPlannedStop> Stops;
 
+    /** Cab faces opposite the section direction. Speed is signed relative to the cab. */
+    UPROPERTY(BlueprintReadOnly, SaveGame, Category="Railway")
+    bool bCabReversed = false;
+
     // Finish service after dwelling at the last scheduled stop, even mid-section.
     UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, Category="Railway")
     bool bFinishAtLastStop = false;
@@ -104,6 +108,41 @@ struct RAILWAY_API FRailwayPlan
     // Replicated with the plan, omitted from disk saves. Zero means no run yet.
     UPROPERTY(Transient)
     uint32 NetworkRevision = 0;
+};
+
+/** A train-local turnout setting. Baked indices are used in play; IDs rebind it after a rebuild. */
+USTRUCT()
+struct FRailwayTurnoutSetting
+{
+    GENERATED_BODY()
+
+    UPROPERTY(SaveGame)
+    int32 Approach = INDEX_NONE;
+    UPROPERTY(SaveGame)
+    int32 Exit = INDEX_NONE;
+    UPROPERTY(SaveGame)
+    FGuid Junction;
+    UPROPERTY(SaveGame)
+    FGuid FromTrack;
+    UPROPERTY(SaveGame)
+    FGuid ToTrack;
+    UPROPERTY(SaveGame)
+    bool bFromReverse = false;
+    UPROPERTY(SaveGame)
+    bool bToReverse = false;
+};
+
+USTRUCT()
+struct FRailwayTurnouts
+{
+    GENERATED_BODY()
+
+    UPROPERTY(SaveGame)
+    FGuid NetworkId;
+    UPROPERTY(SaveGame)
+    FGuid BuildId;
+    UPROPERTY(SaveGame)
+    TArray<FRailwayTurnoutSetting> Settings;
 };
 
 UENUM(BlueprintType)
@@ -128,7 +167,7 @@ struct RAILWAY_API FRailwayMoveState
     UPROPERTY(BlueprintReadOnly, Category="Railway")
     double Distance = 0;
 
-    /** 沿当前计划的有符号速度（cm/s）。客户端按此方向更新组件速度。 */
+    /** 车头坐标系中的有符号速度（cm/s），负值表示车尾先行。 */
     UPROPERTY(BlueprintReadOnly, Category="Railway")
     float Speed = 0;
 

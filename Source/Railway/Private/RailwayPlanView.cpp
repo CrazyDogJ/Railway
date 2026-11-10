@@ -43,8 +43,11 @@ FRailwayPlanOverview URailwayPlanViewLibrary::GetRailwayPlanOverview(ARailwayTra
     Result.State = Train->State;
     Result.DriveMode = Train->DriveMode;
     Result.SpeedKmh = Train->Speed * .036;
-    Result.Distance = Train->Distance;
-    Result.EndDistance = Train->GetServiceEndDistance();
+    Result.bHasService = Train->State != ERailwayState::Idle && !Plan.Sections.IsEmpty();
+    Result.bCabFacesAgainstPlan = Result.bHasService && Plan.bCabReversed;
+    Result.bCoastingWithoutPlan = !Result.bHasService && Train->Speed != 0 && (Train->DriveMode != ERailwayDriveMode::Manual || (Train->DriveInput == 0 && Train->BrakeInput == 0));
+    Result.Distance = Result.bHasService ? Train->Distance : 0;
+    Result.EndDistance = Result.bHasService ? Train->GetServiceEndDistance() : 0;
     Result.RemainingDistance = FMath::Max(0.0, Result.EndDistance - Result.Distance);
     Result.Progress = Result.EndDistance > 0 ? FMath::Clamp(Result.Distance / Result.EndDistance, 0., 1.) : 0.f;
     Result.CurrentStation = Train->CurrentStation;
@@ -54,9 +57,9 @@ FRailwayPlanOverview URailwayPlanViewLibrary::GetRailwayPlanOverview(ARailwayTra
     {
         Result.bLocated = true;
         Result.CurrentTrack = N->Tracks[At.TrackIndex].Name;
+        Result.CurrentTrackId = N->Tracks[At.TrackIndex].Id;
         Result.CurrentTrackDistance = At.TrackDistance;
     }
-    Result.bHasService = Train->State != ERailwayState::Idle && !Plan.Sections.IsEmpty();
     if (!Result.bHasService) return Result;
     if (Plan.Stops.IsValidIndex(Train->NextStop))
     {

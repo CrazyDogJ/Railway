@@ -71,6 +71,26 @@ URailwayPlanRequest* URailwayPlanRequest::StartRailwayBetweenPoints(APlayerContr
     return Request;
 }
 
+URailwayPlanRequest* URailwayPlanRequest::MakeSwitch(APlayerController* Player, const FRailwayTrackChoice& Choice, ERailwayPlanAction Action)
+{
+    auto* Request = Make(Player, Choice.View, Action);
+    Request->Command.ApproachEdge = Choice.ApproachEdge;
+    Request->Command.OutgoingEdge = Choice.OutgoingEdge;
+    Request->Command.ExpectedSelectedEdge = Choice.SelectedEdge;
+    Request->Command.bTowardsRear = Choice.bTowardsRear;
+    return Request;
+}
+
+URailwayPlanRequest* URailwayPlanRequest::ActivateRailwayTrack(APlayerController* Player, const FRailwayTrackChoice& Choice)
+{
+    return MakeSwitch(Player, Choice, ERailwayPlanAction::ActivateTrack);
+}
+
+URailwayPlanRequest* URailwayPlanRequest::DeactivateRailwayTrack(APlayerController* Player, const FRailwayTrackChoice& Choice)
+{
+    return MakeSwitch(Player, Choice, ERailwayPlanAction::DeactivateTrack);
+}
+
 void URailwayPlanRequest::Activate()
 {
     if (bStarted) return;

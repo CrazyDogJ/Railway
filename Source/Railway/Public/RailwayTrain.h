@@ -5,12 +5,14 @@
 #include "RailwayMoveBuffer.h"
 #include "RailwayRouteSettings.h"
 #include "RailwayPlanControl.h"
+#include "RailwayPlanView.h"
 #include "RailwayTrainSaveGame.h"
 #include "RailwayTrain.generated.h"
 
 class UStaticMeshComponent;
 class ARailwayDataActor;
 struct FRailwayPreparedPlan;
+struct FRailwayNetworkData;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FRailwayTimetableChanged);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FRailwayArrival, FName, StationName);
@@ -66,6 +68,10 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion", meta=(ClampMin="0", Units="cm/s"))
     float CruiseSpeed = 800.f;
 
+    /** Neutral rolling deceleration in cm/s². Zero permits lossless coasting. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion", meta=(ClampMin="0"))
+    float RollingResistance = 12.f;
+
     /** 最大牵引加速度，单位 cm/s²。 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion", meta=(ClampMin="1"))
     float Acceleration = 180.f;
@@ -105,6 +111,10 @@ public:
     UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Route")
     bool GoDirectToStop(int32 DestinationStopIndex, FString& OutError);
 
+    /** Refresh physical track / turnout controls when occupancy, plan revision or switch setting changes. */
+    UPROPERTY(BlueprintAssignable, Category="Railway|Driving")
+    FRailwayTimetableChanged OnRailwayTrackChanged;
+
     // Supply the current directed track first, then the desired connected tracks.
     UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category="Railway|Route")
     bool ChangeRemainingRoute(const TArray<FRailwayLeg>& NewLegs, FString& OutError);
@@ -128,11 +138,15 @@ public:
     double GetServiceEndDistance() const;
     void GetPossiblePlanStops(TArray<FRailwayPlannedStop>& OutStops) const;
 
+    /** Query the next physical turnout. Set Towards Rear to inspect the backing direction. */
+    UFUNCTION(BlueprintCallable, Category="Railway|Driving")
+    void GetUpcomingTrackChoices(bool bTowardsRear, TArray<FRailwayTrackChoice>& Choices) const;
+
     /** 当前运行状态，由 SetState 统一分发状态变化事件。 */
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Railway")
     ERailwayState State = ERailwayState::Idle;
 
-    /** 沿计划的有符号速度（cm/s），倒车时为负。 */
+    /** 车头方向为正、倒车为负的实际速度（cm/s）。 */
     UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category="Railway")
     float Speed = 0.f;
 
@@ -287,6 +301,7 @@ private:
     uint32 TimetableUpdateSerial = 0;
     uint32 NotifiedPlanRevision = 0;
     int32 NotifiedStop = INDEX_NONE;
+    int32 NotifiedLeg = INDEX_NONE;
     ERailwayState NotifiedState = ERailwayState::Idle;
 
     // 累计段尾里程（cm），服务端换线或客户端收到计划时重建。
@@ -295,7 +310,20 @@ private:
 
     bool RestoreSavedService(const FRailwayTrainSaveGame& Save, FString& Error);
     bool ParkAtRecoveryPoint(ERailwayDriveMode Mode, FString& Error);
-    bool CancelService(FString& Error);
+    UPROPERTY(ReplicatedUsing=OnRep_Turnouts)
+    FRailwayTurnouts Turnouts;
+    UFUNCTION()
+    void OnRep_Turnouts();
+
+    int32 PreferredExit(const FRailwayNetworkData& N, int32 Approach, int32 Exclude = INDEX_NONE) const;
+    void RememberExit(const FRailwayNetworkData& N, int32 Approach, int32 Exit);
+    void RestoreTurnouts(const FRailwayTurnouts& Saved);
+    bool GetCabEdge(int32& Edge, double& Local) const;
+    bool SetFreeEdge(int32 CabEdge, double Local);
+    void StepFree(double Dt);
+    bool ChangeTurnout(const FRailwayPlanCommand& Command, FString& Error);
+    bool AddBrakingRoom(FRailwayPreparedPlan& Prepared, double RequiredDistance, FString& Error) const;
+    bool CancelService(FString& Error, int32 SwitchApproach = INDEX_NONE, int32 SwitchExit = INDEX_NONE);
     bool EditScheduledVisit(const FRailwayPlanCommand& Command, FString& Error);
     bool IsInService() const;
     FName GetStationForState(ERailwayState InState) const;

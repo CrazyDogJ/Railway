@@ -36,6 +36,7 @@ FRailwayTrainSaveGame ARailwayTrain::GetSaveGameData() const
 
     Saved.bValid = true;
     Saved.DriveMode = DriveMode;
+    Saved.Turnouts = Turnouts;
     Saved.RailwayPlan = ActivePlan;
     Saved.RailwayPlan.NetworkRevision = 0;
     if (const ARailwayDataActor* Data = GetRailwayData(); Data && Data->Network.NetworkId.IsValid() && !ActivePlan.Sections.IsEmpty() &&
@@ -44,7 +45,7 @@ FRailwayTrainSaveGame ARailwayTrain::GetSaveGameData() const
     Saved.Distance = Distance;
     Saved.State = State;
     Saved.NextStop = NextStop;
-    if (State == ERailwayState::Running) Saved.Speed = Speed;
+    if (State == ERailwayState::Running || State == ERailwayState::Idle) Saved.Speed = Speed;
     if (State == ERailwayState::Dwelling)
     {
         Saved.Wait = Wait;
@@ -104,6 +105,7 @@ bool ARailwayTrain::ParkAtRecoveryPoint(ERailwayDriveMode Mode, FString& Error)
     if (!Railway::Routing::Prepare(Data, MoveTemp(Parked), 0, Prepared, Error)) return false;
     ResetMotion();
     DriveMode = Mode == ERailwayDriveMode::Manual ? Mode : ERailwayDriveMode::Automatic;
+    Turnouts = {};
     LastRestoreResult = ERailwayRestoreResult::ParkedAtFallback;
     ActivatePlan(MoveTemp(Prepared), 0, ERailwayState::Idle);
     return true;
@@ -122,6 +124,7 @@ bool ARailwayTrain::RestoreSavedService(const FRailwayTrainSaveGame& Save, FStri
     {
         DriveMode = Save.DriveMode;
         LastRestoreResult = ERailwayRestoreResult::Restored;
+        RestoreTurnouts(Save.Turnouts);
         ResetPlan(Save.State);
         return true;
     }
@@ -166,7 +169,8 @@ bool ARailwayTrain::RestoreSavedService(const FRailwayTrainSaveGame& Save, FStri
 
     ResetMotion();
     DriveMode = Save.DriveMode;
-    if (Save.State == ERailwayState::Running) Speed = Save.Speed;
+    RestoreTurnouts(Save.Turnouts);
+    if (Save.State == ERailwayState::Running || Save.State == ERailwayState::Idle) Speed = Save.Speed;
     if (Save.State == ERailwayState::Dwelling)
     {
         ElapsedDwell = Elapsed;
