@@ -133,6 +133,9 @@ struct RAILWAY_API FRailwayPlanOverview
     FGuid CurrentTrackId;
 
     UPROPERTY(BlueprintReadOnly, Category="Railway")
+    bool bCurrentTrackIsLoop = false;
+
+    UPROPERTY(BlueprintReadOnly, Category="Railway")
     double CurrentTrackDistance = 0;
 
     UPROPERTY(BlueprintReadOnly, Category="Railway")

@@ -11,6 +11,7 @@ namespace Railway::Geometry
     bool Sample(const ARailwayDataActor* Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
         double Distance, int32& SectionIndex, double& TrackDistance, FTransform& Pose);
 
-    bool FindPlanDistance(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
+    enum class ELocationMatch { Found, Missing, AmbiguousOrInvalid };
+    ELocationMatch FindPlanDistance(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
         const FRailwayTrackLocation& Location, int32 SectionHint, TOptional<double> Preferred, double& OutDistance, FString& Error);
 }

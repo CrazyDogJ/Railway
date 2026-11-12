@@ -11,6 +11,7 @@
 
 class UStaticMeshComponent;
 class ARailwayDataActor;
+class URailwayWorldSubsystem;
 struct FRailwayPreparedPlan;
 struct FRailwayNetworkData;
 
@@ -30,6 +31,11 @@ public:
     void RefreshPreview();
 #endif
     virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type Reason) override;
+#if WITH_EDITOR
+    virtual void PostRegisterAllComponents() override;
+    virtual void PostUnregisterAllComponents() override;
+#endif
     /** 仅在状态实际变化时通知监听器。 */
     void SetState(ERailwayState InState);
     /** 将速度沿车头方向写入根组件。bReverse 保留供已有 C++ 调用，姿态已包含行驶方向。 */
@@ -202,7 +208,11 @@ public:
     UFUNCTION(BlueprintPure, Category="Railway|Route")
     bool GetCurrentTrackLocation(FRailwayTrackLocation& OutLocation) const;
 
-    /** 从当前位置接续新计划；同轨反复经过时，SectionHint 可指定新计划中的区间下标。 */
+    /** 当前实际占用的烘焙轨道是否为闭合样条。未定位时返回 false。 */
+    UFUNCTION(BlueprintPure, Category="Railway|Route")
+    bool IsCurrentTrackLoop() const;
+
+    /** 从当前位置接续新计划。同向闭环在圈末可接续下一圈，SectionHint 可显式选择新计划中的区间。 */
     UFUNCTION(BlueprintCallable, Category="Railway|Route", BlueprintAuthorityOnly, meta=(AdvancedDisplay="SectionHint"))
     bool ReplacePreparedRoute(const FRailwayPlan& Plan, FString& OutError, int32 SectionHint = -1);
 
@@ -266,6 +276,14 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Motion")
     float ExternalSpeedLimit = -1.f;
 
+    /** Physical length centered on the track anchor, including all cars, in cm. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Railway|Traffic", meta=(ClampMin="0", Units="cm"))
+    double TrainLength = 250.0;
+
+    /** Clear rail to retain between this train and the next. The larger of both settings applies. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Railway|Traffic", meta=(ClampMin="0", Units="cm"))
+    double TrafficClearance = 150.0;
+
     /** 服务端正常行驶时的快照发送频率，单位 Hz。 */
     UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category="Railway|Networking", meta=(ClampMin="1", ClampMax="60"))
     float SnapshotRateHz = 15.f;
@@ -282,10 +300,22 @@ protected:
     virtual double CalculateDriverTargetSpeed(double SpeedLimit, double DeltaSeconds) const;
 
 private:
-    mutable TWeakObjectPtr<ARailwayDataActor> CachedRailwayData;
+    friend class URailwayWorldSubsystem;
+    URailwayWorldSubsystem* GetRailwaySubsystem() const;
+    void InvalidateTraffic();
+    double LimitTrafficTravel(int32 CabDirection, double BeforeSpeed, double Dt, bool bTrapezoidal);
+    double TrafficRemaining = DBL_MAX;
+    int32 TrafficDirection = 0;
+    bool bWaitingForRailwayData = false;
     mutable FGuid PreviewBuild;
     mutable FRailwayRouteSettings PreviewSettings;
     mutable FRailwaySection PreviewSection;
+    // An unplanned parked train may be queried every dispatch frame. Projection only
+    // depends on the baked curves and world position once its preview has been tried.
+    mutable TWeakObjectPtr<const ARailwayDataActor> ProjectionData;
+    mutable FGuid ProjectionBuild;
+    mutable FVector ProjectionOrigin = FVector::ZeroVector;
+    mutable FRailwayTrackLocation ProjectedLocation;
 
     UFUNCTION()
     void OnRep_TrainMoveState();

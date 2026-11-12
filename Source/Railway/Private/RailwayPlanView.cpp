@@ -58,6 +58,7 @@ FRailwayPlanOverview URailwayPlanViewLibrary::GetRailwayPlanOverview(ARailwayTra
         Result.bLocated = true;
         Result.CurrentTrack = N->Tracks[At.TrackIndex].Name;
         Result.CurrentTrackId = N->Tracks[At.TrackIndex].Id;
+        Result.bCurrentTrackIsLoop = N->Tracks[At.TrackIndex].IsLoop();
         Result.CurrentTrackDistance = At.TrackDistance;
     }
     if (!Result.bHasService) return Result;

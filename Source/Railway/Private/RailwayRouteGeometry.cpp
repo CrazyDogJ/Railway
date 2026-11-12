@@ -26,8 +26,10 @@ bool Locate(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TAr
     const FRailwaySection& Section = Plan.Sections[I];
     if (!Data.Edges.IsValidIndex(Section.Leg.EdgeIndex)) return false;
     const FRailwayEdge& Edge = Data.Edges[Section.Leg.EdgeIndex];
-    const double Along = FMath::Clamp(Distance - (I ? Ends[I - 1] : 0.0), 0.0, Section.TravelDistance);
-    TrackDistance = FMath::Clamp(Section.EntryDistance + Edge.Sign() * Along,
+    const double Along = Distance == Ends[I] ? Section.TravelDistance :
+        FMath::Clamp(Distance - (I ? Ends[I - 1] : 0.0), 0.0, Section.TravelDistance);
+    TrackDistance = Along == FMath::Abs(Edge.EndDistance - Section.EntryDistance) ? Edge.EndDistance :
+        FMath::Clamp(Section.EntryDistance + Edge.Sign() * Along,
         FMath::Min(Edge.StartDistance, Edge.EndDistance), FMath::Max(Edge.StartDistance, Edge.EndDistance));
     SectionIndex = I;
     return true;
@@ -44,13 +46,13 @@ bool Sample(const ARailwayDataActor* Data, const FRailwayPlan& Plan, const TArra
     return Data->SampleTrack({Edge.TrackIndex, TrackDistance}, Edge.IsReverse() != Plan.bCabReversed, Pose);
 }
 
-bool FindPlanDistance(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
+ELocationMatch FindPlanDistance(const FRailwayNetworkData& Data, const FRailwayPlan& Plan, const TArray<double>& Ends,
     const FRailwayTrackLocation& Location, int32 SectionHint, TOptional<double> Preferred, double& OutDistance, FString& Error)
 {
     if (SectionHint != INDEX_NONE && !Plan.Sections.IsValidIndex(SectionHint))
     {
         Error = TEXT("Invalid section hint");
-        return false;
+        return ELocationMatch::AmbiguousOrInvalid;
     }
     TArray<double> Matches;
     for (int32 I = 0; I < Plan.Sections.Num(); ++I)
@@ -75,14 +77,14 @@ bool FindPlanDistance(const FRailwayNetworkData& Data, const FRailwayPlan& Plan,
             if (FMath::IsNearlyEqual(Match, Preferred.GetValue(), UE_KINDA_SMALL_NUMBER))
             {
                 OutDistance = Match;
-                return true;
+                return ELocationMatch::Found;
             }
     if (Matches.Num() == 1 || Matches.Contains(0.0))
     {
         OutDistance = Matches.Contains(0.0) ? 0.0 : Matches[0];
-        return true;
+        return ELocationMatch::Found;
     }
     Error = Matches.IsEmpty() ? TEXT("New route misses the occupied track location") : TEXT("Specify the repeated location's section hint");
-    return false;
+    return Matches.IsEmpty() ? ELocationMatch::Missing : ELocationMatch::AmbiguousOrInvalid;
 }
 }

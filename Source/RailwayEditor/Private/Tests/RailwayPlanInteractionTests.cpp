@@ -2,7 +2,8 @@
 
 #include "Misc/AutomationTest.h"
 #include "RailwayDispatchFixtures.h"
-#include "EngineUtils.h"
+#include "Engine/World.h"
+#include "RailwayWorldSubsystem.h"
 #include "RailwayDataActor.h"
 #include "RailwayPlanControl.h"
 #include "RailwayPlanWidget.h"
@@ -13,6 +14,12 @@
 
 namespace Railway::Tests
 {
+ARailwayTrain* OnlyTrain(UWorld& World)
+{
+    const auto Trains = World.GetSubsystem<URailwayWorldSubsystem>()->GetRailwayTrains();
+    return Trains.Num() == 1 ? Trains[0] : nullptr;
+}
+
 ARailwayDataActor* MakeNetwork(UWorld& World)
 {
     auto* Data = World.SpawnActor<ARailwayDataActor>();
@@ -186,7 +193,7 @@ bool FRailwayPlayerPanelTest::RunTest(const FString&)
     ARailwayTrain* Train = nullptr;
     const bool bReady = Worlds.TickUntil([&]
     {
-        for (TActorIterator<ARailwayTrain> It(Client); It; ++It) Train = *It;
+        Train = Railway::Tests::OnlyTrain(*Client);
         return Train && PC->FindComponentByClass<URailwayPlanControlComponent>();
     }, 240);
     if (!TestTrue(TEXT("Train and owner command channel replicated"), bReady)) return false;

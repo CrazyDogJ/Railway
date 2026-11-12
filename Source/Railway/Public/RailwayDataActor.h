@@ -143,6 +143,10 @@ class RAILWAY_API ARailwayDataActor final : public AActor
 
 public:
     ARailwayDataActor();
+    virtual void PostRegisterAllComponents() override;
+    virtual void PostUnregisterAllComponents() override;
+    virtual void BeginPlay() override;
+    virtual void EndPlay(const EEndPlayReason::Type Reason) override;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Railway")
     FRailwayNetworkData Network;

@@ -1,6 +1,32 @@
 #include "RailwayTrain.h"
 
 #include "RailwayDataActor.h"
+#include "RailwayWorldSubsystem.h"
+
+double ARailwayTrain::LimitTrafficTravel(int32 CabDirection, double BeforeSpeed, double Dt, bool bTrapezoidal)
+{
+    if (BeforeSpeed == 0 && Speed == 0) return 0;
+    if (auto* Registry = GetRailwaySubsystem()) Registry->PrepareMovement(*this, CabDirection);
+    double Magnitude = FMath::Abs(Speed);
+    if (TrafficRemaining != DBL_MAX)
+    {
+        const double Brake = FMath::Max(1.f, Braking);
+        const double BrakeStep = Brake * Dt;
+        const double Safe = FMath::Sqrt(BrakeStep * BrakeStep + 2 * Brake * TrafficRemaining) - BrakeStep;
+        Magnitude = FMath::Min(Magnitude, FMath::Max(Safe, BeforeSpeed - BrakeStep));
+        Speed = CabDirection * Magnitude;
+    }
+    const double Travel = (bTrapezoidal ? .5 * (BeforeSpeed + Magnitude) : Magnitude) * Dt;
+    if (TrafficRemaining == DBL_MAX) return Travel;
+    const double Granted = FMath::Min(Travel, TrafficRemaining);
+    TrafficRemaining -= Granted;
+    if (TrafficRemaining <= UE_KINDA_SMALL_NUMBER)
+    {
+        Speed = 0.f;
+        TrafficRemaining = 0;
+    }
+    return Granted;
+}
 
 void ARailwayTrain::ServerSetDriveMode_Implementation(ERailwayDriveMode NewMode)
 {
@@ -8,19 +34,22 @@ void ARailwayTrain::ServerSetDriveMode_Implementation(ERailwayDriveMode NewMode)
     if (NewMode == DriveMode) return;
     ClearDriverInputs();
     DriveMode = NewMode;
+    InvalidateTraffic();
     ForceNetUpdate();
 }
 
 void ARailwayTrain::ServerSetDriveInput_Implementation(float Value)
 {
-    if (DriveMode == ERailwayDriveMode::Manual && FMath::IsFinite(Value))
-        DriveInput = FMath::Clamp(Value, -1.f, 1.f);
+    if (DriveMode != ERailwayDriveMode::Manual || !FMath::IsFinite(Value)) return;
+    if (!Speed && FMath::Sign(DriveInput) != FMath::Sign(Value)) InvalidateTraffic();
+    DriveInput = FMath::Clamp(Value, -1.f, 1.f);
 }
 
 void ARailwayTrain::ServerSetBrakeInput_Implementation(float Value)
 {
-    if (DriveMode == ERailwayDriveMode::Manual && FMath::IsFinite(Value))
-        BrakeInput = FMath::Clamp(Value, 0.f, 1.f);
+    if (DriveMode != ERailwayDriveMode::Manual || !FMath::IsFinite(Value)) return;
+    if (!Speed && (BrakeInput > 0) != (Value > 0)) InvalidateTraffic();
+    BrakeInput = FMath::Clamp(Value, 0.f, 1.f);
 }
 
 double ARailwayTrain::CalculateDriverTargetSpeed(double SpeedLimit, double DeltaSeconds) const
@@ -159,7 +188,7 @@ void ARailwayTrain::Step(double DeltaSeconds)
     const double DesiredMagnitude = FMath::Clamp(Direction * RequestedSpeed, 0.0, SafeSpeed);
     const double SpeedChange = FMath::Clamp(DesiredMagnitude - Magnitude, -BrakeStep, FMath::Max(1.f, Acceleration) * DeltaSeconds);
     Speed = static_cast<float>(CabSign * Direction * (Magnitude + SpeedChange));
-    const double Travel = FMath::Min(Remaining, FMath::Abs(Speed) * DeltaSeconds);
+    const double Travel = FMath::Min(Remaining, LimitTrafficTravel(int32(CabSign * Direction), Magnitude, DeltaSeconds, false));
     Distance += Direction * Travel;
 
     const bool bAtTarget = Travel >= Remaining || (Travel > 0.0 && Remaining - Travel <= .01);

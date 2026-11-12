@@ -7,7 +7,7 @@ namespace Railway::Routing
 {
 // Resolve a native-distance interval against the current split points. Only points at the two
 // ends may be partial. A zero-length section preserves the selected track at a junction.
-bool AppendTrackPass(const FRailwayNetworkData& Data, int32 TrackIndex, bool bReverse, double Entry,
+static bool AppendLinearInterval(const FRailwayNetworkData& Data, int32 TrackIndex, bool bReverse, double Entry,
     double Exit, bool bPreferIncoming, FRailwayPlan& Plan, FString& Error)
 {
     const FRailwayBakedTrack& Track = Data.Tracks[TrackIndex];
@@ -39,6 +39,22 @@ bool AppendTrackPass(const FRailwayNetworkData& Data, int32 TrackIndex, bool bRe
     Error = FString::Printf(TEXT("No directed interval on %s at %.2f cm"), *Track.Name.ToString(), Entry);
     return false;
 }
+
+bool AppendTrackPass(const FRailwayNetworkData& Data, int32 TrackIndex, bool bReverse, double Entry,
+    double Exit, bool bPreferIncoming, FRailwayPlan& Plan, FString& Error)
+{
+    const auto& Track = Data.Tracks[TrackIndex];
+    if (!Track.IsLoop() || !(bReverse ? Exit > Entry : Entry > Exit))
+        return AppendLinearInterval(Data, TrackIndex, bReverse, Entry, Exit, bPreferIncoming, Plan, Error);
+
+    const double Closing = bReverse ? 0.0 : Track.Length();
+    const double Opening = bReverse ? Track.Length() : 0.0;
+    if (Entry != Closing && !AppendLinearInterval(Data, TrackIndex, bReverse, Entry, Closing, false, Plan, Error))
+        return false;
+    if (Exit != Opening || Entry == Closing)
+        return AppendLinearInterval(Data, TrackIndex, bReverse, Opening, Exit, bPreferIncoming, Plan, Error);
+    return true;
+}
 }
 
 namespace
@@ -62,19 +78,24 @@ bool Connect(const FRailwayNetworkData& Data, FPass& A, FPass& B, FString& Error
         return true;
     }
 
-    int32 Matches = 0;
+    int32 Matches = 0, BestWraps = MAX_int32;
     double Exit = 0, Entry = 0;
     for (int32 I = Track.FirstEdge; I < Track.FirstEdge + Track.NumEdges; ++I)
     {
         const FRailwayEdge& E = Data.Edges[I];
         if (E.IsReverse() != A.bReverse || (A.Exit != -1 && A.Exit != E.EndDistance)) continue;
-        if (A.Entry >= 0 && (E.EndDistance - A.Entry) * E.Sign() < 0) continue;
+        const bool bWrapA = A.Entry >= 0 && (E.EndDistance - A.Entry) * E.Sign() < 0;
+        if (bWrapA && !Track.IsLoop()) continue;
         for (int32 J = 0; J < E.NumSuccessors; ++J)
         {
             const FRailwayEdge& Next = Data.Edges[Data.Successors[E.FirstSuccessor + J]];
             if (Next.TrackIndex != B.Track || Next.IsReverse() != B.bReverse ||
                 (B.Entry != -1 && B.Entry != Next.StartDistance)) continue;
-            if (B.Exit >= 0 && (B.Exit - Next.StartDistance) * Next.Sign() < 0) continue;
+            const bool bWrapB = B.Exit >= 0 && (B.Exit - Next.StartDistance) * Next.Sign() < 0;
+            if (bWrapB && !Data.Tracks[B.Track].IsLoop()) continue;
+            const int32 Wraps = int32(bWrapA) + int32(bWrapB);
+            if (Wraps > BestWraps) continue;
+            if (Wraps < BestWraps) { Matches = 0; BestWraps = Wraps; }
             ++Matches;
             Exit = E.EndDistance;
             Entry = Next.StartDistance;

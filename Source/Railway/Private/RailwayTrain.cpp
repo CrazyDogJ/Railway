@@ -9,7 +9,7 @@
 #include "RailwayRouteGeometry.h"
 #include "RailwayRoutePlanner.h"
 #include "RailwayDataActor.h"
-#include "EngineUtils.h"
+#include "RailwayWorldSubsystem.h"
 #include "RailwayTrackPlacement.h"
 #include "UObject/ConstructorHelpers.h"
 #if WITH_EDITOR
@@ -37,24 +37,23 @@ ARailwayTrain::ARailwayTrain()
 
 ARailwayDataActor* ARailwayTrain::GetRailwayData() const
 {
-    if (RailwayData) return IsValid(RailwayData) && RailwayData->GetWorld() == GetWorld() ? RailwayData.Get() : nullptr;
-    if (CachedRailwayData.IsValid()) return CachedRailwayData.Get();
-    if (!GetWorld()) return nullptr;
-    ARailwayDataActor* SameLevel = nullptr;
-    ARailwayDataActor* Candidate = nullptr;
-    int32 Count = 0;
-    for (TActorIterator<ARailwayDataActor> It(GetWorld()); It; ++It)
+    const auto* Registry = GetRailwaySubsystem();
+    if (RailwayData)
     {
-        Candidate = *It;
-        ++Count;
-        if (Candidate->GetLevel() == GetLevel())
-        {
-            if (SameLevel) return nullptr;
-            SameLevel = Candidate;
-        }
+        if (!IsValid(RailwayData) || RailwayData->GetWorld() != GetWorld()) return nullptr;
+        return !HasActorBegunPlay() || (Registry && Registry->DataActors.Contains(RailwayData.Get())) ? RailwayData.Get() : nullptr;
     }
-    CachedRailwayData = SameLevel ? SameLevel : (Count == 1 ? Candidate : nullptr);
-    return CachedRailwayData.Get();
+    return Registry ? Registry->FindDataFor(*this) : nullptr;
+}
+
+URailwayWorldSubsystem* ARailwayTrain::GetRailwaySubsystem() const
+{
+    return UWorld::GetSubsystem<URailwayWorldSubsystem>(GetWorld());
+}
+
+void ARailwayTrain::InvalidateTraffic()
+{
+    if (auto* Registry = GetRailwaySubsystem()) Registry->bTrafficDirty = true;
 }
 
 bool ARailwayTrain::GetPreviewLocation_Implementation(FRailwayLeg& PreviewLeg, double& TrackDistance) const
@@ -83,6 +82,20 @@ bool ARailwayTrain::UpdatePreviewRotation_Implementation()
 }
 
 #if WITH_EDITOR
+void ARailwayTrain::PostRegisterAllComponents()
+{
+    Super::PostRegisterAllComponents();
+    if (GetWorld() && GetWorld()->WorldType == EWorldType::Editor)
+        if (auto* Registry = GetRailwaySubsystem()) Registry->RegisterTrain(*this);
+}
+
+void ARailwayTrain::PostUnregisterAllComponents()
+{
+    if (GetWorld() && GetWorld()->WorldType == EWorldType::Editor)
+        if (auto* Registry = GetRailwaySubsystem()) Registry->UnregisterTrain(*this);
+    Super::PostUnregisterAllComponents();
+}
+
 void ARailwayTrain::RefreshPreview()
 {
     FEditorScriptExecutionGuard ScriptGuard;
@@ -107,10 +120,21 @@ void ARailwayTrain::OnConstruction(const FTransform& Transform)
 void ARailwayTrain::BeginPlay()
 {
     if (HasAuthority()) SetReplicateMovement(false); // Also override older Blueprint movement defaults.
+    if (auto* Registry = GetRailwaySubsystem()) Registry->RegisterTrain(*this);
     Super::BeginPlay();
     const bool bHasPreset = Route.Mode == ERailwayRouteMode::OrderedTracks ? !Route.Tracks.IsEmpty() :
         (Route.Start.Source.Id.IsValid() || Route.Destination.Source.Id.IsValid());
-    if (HasAuthority() && bAutoStart && bHasPreset) StartRoute();
+    if (HasAuthority() && bAutoStart && bHasPreset)
+    {
+        bWaitingForRailwayData = !GetRailwayData();
+        if (!bWaitingForRailwayData) StartRoute();
+    }
+}
+
+void ARailwayTrain::EndPlay(const EEndPlayReason::Type Reason)
+{
+    if (auto* Registry = GetRailwaySubsystem()) Registry->UnregisterTrain(*this);
+    Super::EndPlay(Reason);
 }
 
 void ARailwayTrain::SetState(const ERailwayState InState)
@@ -119,6 +143,7 @@ void ARailwayTrain::SetState(const ERailwayState InState)
     {
         const auto PrevState = State;
         State = InState;
+        InvalidateTraffic();
         OnStateChanged.Broadcast(PrevState, State);
     }
 }
@@ -165,6 +190,8 @@ void ARailwayTrain::InstallPlan(FRailwayPlan&& Plan)
     Plan.NetworkRevision = ActivePlan.NetworkRevision + 1;
     if (Plan.NetworkRevision == 0) Plan.NetworkRevision = 1;
     ActivePlan = MoveTemp(Plan);
+    bWaitingForRailwayData = false;
+    InvalidateTraffic();
 }
 
 void ARailwayTrain::ResetPlan(ERailwayState NewState)
@@ -403,6 +430,11 @@ void ARailwayTrain::Tick(float DeltaSeconds)
 #endif
     if (HasAuthority())
     {
+        if (bWaitingForRailwayData && GetRailwayData())
+        {
+            bWaitingForRailwayData = false;
+            StartRoute();
+        }
         // 行程结束后仍可沿现有计划退回。制动松开且驾驶员给反向牵引时才恢复运动。
         if (State == ERailwayState::Finished && DriveMode == ERailwayDriveMode::Manual &&
             (ActivePlan.bCabReversed ? -DriveInput : DriveInput) < 0.f && BrakeInput == 0.f && Distance > 0 && !ActivePlan.Sections.IsEmpty())

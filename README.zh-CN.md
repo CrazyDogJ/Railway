@@ -24,6 +24,22 @@ Railway 在编辑器里构建铁路网。游戏中的列车从当前关卡的 `A
 - **Sample Track** 可直接从 Data Actor 采样世界姿态。列车的 **Sample Plan**、**Sample Route** 和客户端运动插值使用相同的数据。**Resolve Planned Stop** 根据站点索引读取烘焙定义。
 - 列车优先使用显式指定的 `RailwayData`。未指定时，优先查找同关卡数据，再尝试世界中唯一的数据 Actor。多个独立铁路网同时加载时，在列车上明确指定所属数据 Actor。
 
+## 闭合轨道与行程接续
+
+在列车蓝图中可用 **Is Current Track Loop** 查询当前轨道是否为闭合样条。**Ordered Tracks** 的单次轨道行程可以跨接缝，例如在 10000 cm 的环线上正向从 9500 cm 到 1200 cm，总行程为 1700 cm。
+
+要接续下一圈，可在到达圈末前对列车调用 **Replace Prepared Route**，传入从同一闭合轨道接缝同向出发的新计划，并让 **Section Hint** 保持默认的 `-1`。列车会走完圈尾，再执行新计划的停站和分岔。反向绕圈同样适用。新计划仍会在自己的终点结束，需要连续运营时可再接续下一班。要定位到新计划中某个既有圈次，可显式指定它的区间下标。
+
+若旧关卡的闭合样条在接缝处有直角或折角，请重新执行 **Build Railway Data** 并保存关卡，更新接缝的有向连接。
+
+## 世界子系统与多车调度
+
+蓝图通过 **Get Railway World Subsystem** 获取当前世界的子系统，再用 **Get Railway Trains** 或 **Get Railway Data Actors** 读取已注册的对象。玩家客户端列出本地已加载、已复制的对象。列车可先于铁路数据进入游戏，配置了自动发车的列车会在数据可用后启动预设路线。已有计划使用其烘焙标识匹配铁路网，流送进来的其他铁路网不会打断当前班次。
+
+服务端按计划区间、手动道岔选择和实际行驶方向计算沿轨间距。同向时后车减速跟随，前车停车时后车在车尾外等候。列车从两个入口汇入同一岔口时，较近的来车优先，距离相同时按注册顺序放行。已进入单线区间的列车享有通行优先。手动牵引、倒车和无计划惰行都使用同一套间距限制。
+
+每辆车的 **Railway → Traffic** 中可设置 **Train Length**（以轨道定位点为中心的整列车长度，默认 250 cm）和 **Traffic Clearance**（车体间净距，默认 150 cm）。两车采用较大的净距。停站、结束行程的列车继续占轨，离开后后车可按计划或驾驶输入恢复行驶。两车已在同一单线上迎面相遇时会制动停车，需要其中一车倒退或改走可用支线才能交会。
+
 ## 玩家调度面板
 
 在本地 Player Controller 的蓝图里调用 **Create Widget**，Class 选 **Railway Plan Widget**，Owning Player 传入当前控制器，Train 传入要查看的列车。然后调用 **Add to Player Screen**。要切换列车，复用同一个控件并调用 **Set Train**。面板也可以嵌入已有 UMG 菜单。全屏交互时由打开菜单的游戏逻辑设置 **Game and UI** 输入模式和鼠标光标，关闭时恢复原输入模式。
@@ -38,7 +54,7 @@ Railway 在编辑器里构建铁路网。游戏中的列车从当前关卡的 `A
 
 编辑器视口或 PIE 控制台输入 `railway.Debug.Trains 1` 显示列车概览，`2` 展开轨道、停站、驾驶输入、速度限制、计划与快照版本、网络角色和铁路网构建信息，`0` 关闭。选中列车时只显示当前视口世界中被选中的列车。使用实时视口并开启 **On Screen Debug** 显示标志。
 
-自动化用例位于 RailwayEditor 的 `Private/Tests` 目录，可在 Automation 面板运行 `Railway.Dispatch`。
+自动化用例位于 RailwayEditor 的 `Private/Tests` 目录。可在 Automation 面板运行 `Railway.Traffic` 验证多车调度，或运行 `Railway` 执行插件的全部用例。
 
 ### 用普通 Widget Blueprint 制作自己的面板
 

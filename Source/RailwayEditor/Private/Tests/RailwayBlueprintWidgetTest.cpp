@@ -11,7 +11,7 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/TextBlock.h"
 #include "EdGraphSchema_K2.h"
-#include "EngineUtils.h"
+#include "Engine/World.h"
 #include "K2Node_AsyncAction.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_CustomEvent.h"
@@ -155,7 +155,7 @@ bool FRailwayBlueprintWidgetTest::RunTest(const FString&)
     auto* PC = Client->GetFirstPlayerController();
     ARailwayTrain* Proxy = nullptr;
     if (!Worlds.TickUntil([&]{
-        for (TActorIterator<ARailwayTrain> It(Client); It; ++It) Proxy = *It;
+        Proxy = Railway::Tests::OnlyTrain(*Client);
         return Proxy && PC->FindComponentByClass<URailwayPlanControlComponent>();
     }, 240)) return false;
 

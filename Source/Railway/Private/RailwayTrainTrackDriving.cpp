@@ -217,6 +217,7 @@ bool ARailwayTrain::ChangeTurnout(const FRailwayPlanCommand& Cmd, FString& Error
 
 void ARailwayTrain::OnRep_Turnouts()
 {
+    if (HasAuthority()) InvalidateTraffic();
     OnRailwayTrackChanged.Broadcast();
 }
 
@@ -264,9 +265,8 @@ void ARailwayTrain::StepFree(double Dt)
         const double Decel = FMath::Max(0.f, RollingResistance) + FMath::Max(1.f, Braking) * BrakeInput;
         Speed = FMath::Sign(Before) * FMath::Max(0.0, FMath::Abs(Before) - Dt * Decel);
     }
-    const double Travel = .5 * (Before + Speed) * Dt;
-    const bool bRear = Travel < 0;
-    double Left = FMath::Abs(Travel);
+    const bool bRear = Before < 0 || (Before == 0 && Speed < 0);
+    double Left = LimitTrafficTravel(bRear ? -1 : 1, FMath::Abs(Before), Dt, true);
     while (Left > 0)
     {
         const double Length = GetRouteLength();

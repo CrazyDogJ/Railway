@@ -1,6 +1,33 @@
 #include "RailwayDataActor.h"
 
 #include "Math/RotationMatrix.h"
+#include "Engine/World.h"
+#include "RailwayWorldSubsystem.h"
+
+void ARailwayDataActor::PostRegisterAllComponents()
+{
+    Super::PostRegisterAllComponents();
+    // Covers editor previews and the interval before a streamed level dispatches BeginPlay.
+    if (auto* Registry = UWorld::GetSubsystem<URailwayWorldSubsystem>(GetWorld())) Registry->RegisterData(*this);
+}
+
+void ARailwayDataActor::PostUnregisterAllComponents()
+{
+    if (auto* Registry = UWorld::GetSubsystem<URailwayWorldSubsystem>(GetWorld())) Registry->UnregisterData(*this);
+    Super::PostUnregisterAllComponents();
+}
+
+void ARailwayDataActor::BeginPlay()
+{
+    if (auto* Registry = UWorld::GetSubsystem<URailwayWorldSubsystem>(GetWorld())) Registry->RegisterData(*this);
+    Super::BeginPlay();
+}
+
+void ARailwayDataActor::EndPlay(const EEndPlayReason::Type Reason)
+{
+    if (auto* Registry = UWorld::GetSubsystem<URailwayWorldSubsystem>(GetWorld())) Registry->UnregisterData(*this);
+    Super::EndPlay(Reason);
+}
 
 ARailwayDataActor::ARailwayDataActor()
 {

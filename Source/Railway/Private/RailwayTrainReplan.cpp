@@ -24,6 +24,91 @@ bool SameStop(const FRailwayPlannedStop& A, const FRailwayPlannedStop& B)
     return A.StationIndex == B.StationIndex;
 }
 
+// Only the final uninterrupted pass up to this seam is handed over. An earlier lap,
+// a different branch, or a direct service ending at an intermediate station keeps its own cursor.
+bool EndsAtNextLoopSeam(const ARailwayTrain& Train, const FRailwayNetworkData& N, const FRailwayEdge& First, double Local)
+{
+    if (Train.State == ERailwayState::Idle || !Train.ActivePlan.Sections.IsValidIndex(Train.Leg)) return false;
+    const double Length = N.Tracks[First.TrackIndex].Length();
+    const double Closing = First.IsReverse() ? 0.0 : Length;
+    const double Remaining = Train.GetServiceEndDistance() - Train.Distance;
+    if (!FMath::IsNearlyEqual(Remaining, FMath::Abs(Closing - Local), UE_KINDA_SMALL_NUMBER) &&
+        !(Remaining == 0 && (Local == 0 || Local == Length))) return false;
+
+    double Left = Remaining;
+    for (int32 I = Train.Leg; I < Train.ActivePlan.Sections.Num(); ++I)
+    {
+        const auto& S = Train.ActivePlan.Sections[I];
+        const auto& E = N.Edges[S.Leg.EdgeIndex];
+        if (E.TrackIndex != First.TrackIndex || E.IsReverse() != First.IsReverse()) return false;
+        Left -= S.TravelDistance - (I == Train.Leg ? FMath::Abs(Local - S.EntryDistance) : 0.);
+        if (Left <= UE_KINDA_SMALL_NUMBER) return true;
+    }
+    return false;
+}
+
+bool JoinLoopEntry(const ARailwayTrain& Train, const FRailwayTrackLocation& Current, bool bKeepRemainingCalls,
+    FRailwayPreparedPlan& Prepared, FString& Error)
+{
+    const auto& N = Prepared.Data->Network;
+    auto& Plan = Prepared.Plan;
+    auto& First = Plan.Sections[0];
+    const auto& E = N.Edges[First.Leg.EdgeIndex];
+    const auto& Track = N.Tracks[E.TrackIndex];
+    const double Length = Track.Length();
+    const double Closing = E.IsReverse() ? 0. : Length;
+    if (Current.TrackDistance == Closing && First.EntryDistance != Closing)
+    {
+        const int32 LastForward = Track.FirstEdge + Track.NumEdges - 2;
+        const int32 Incoming = E.IsReverse() ? Track.FirstEdge + 1 : LastForward;
+        const int32 Outgoing = E.IsReverse() ? LastForward + 1 : Track.FirstEdge;
+        if (!N.CanFollow(Incoming, Outgoing))
+        {
+            Error = TEXT("No through connection at the closed track seam; rebuild railway data");
+            return false;
+        }
+    }
+    const bool bSameSeam = FMath::Abs(Current.TrackDistance - First.EntryDistance) == Length;
+    double Added = 0;
+    if (!bSameSeam && Current.TrackDistance != First.EntryDistance)
+    {
+        FRailwayPlan Prefix;
+        if (!Railway::Routing::AppendTrackPass(N, E.TrackIndex, E.IsReverse(), Current.TrackDistance,
+            First.EntryDistance, false, Prefix, Error)) return false;
+        for (const auto& S : Prefix.Sections) Added += S.TravelDistance;
+        // The new entry may be in the middle of an edge. Only the first and last
+        // intervals of a valid plan may be partial; merge the two pieces at that point.
+        const auto& Tail = Prefix.Sections.Last();
+        if (Tail.Leg.EdgeIndex == First.Leg.EdgeIndex && First.EntryDistance != E.StartDistance)
+        {
+            const double Exit = First.TravelDistance == FMath::Abs(E.EndDistance - First.EntryDistance) ?
+                E.EndDistance : First.EntryDistance + E.Sign() * First.TravelDistance;
+            First.EntryDistance = Tail.EntryDistance;
+            First.TravelDistance = FMath::Abs(Exit - First.EntryDistance);
+            Prefix.Sections.Pop();
+        }
+        Plan.Sections.Insert(Prefix.Sections, 0);
+    }
+
+    for (auto& Stop : Plan.Stops) Stop.Distance += Added;
+    if (bKeepRemainingCalls)
+    {
+        TArray<FRailwayPlannedStop> Calls;
+        for (int32 I = Train.NextStop; Train.ActivePlan.Stops.IsValidIndex(I); ++I)
+        {
+            auto Call = Train.ActivePlan.Stops[I];
+            if (Call.Distance > Train.GetServiceEndDistance()) break;
+            Call.Distance = FMath::Clamp(Call.Distance - Train.Distance, 0., Added);
+            // Two timetables may both name a station at the handover point.
+            if (Call.Distance == Added && Plan.Stops.ContainsByPredicate([&](const auto& S)
+                { return S.Distance == Added && S.StationIndex == Call.StationIndex; })) continue;
+            Calls.Add(Call);
+        }
+        Plan.Stops.Insert(Calls, 0);
+    }
+    return Railway::Routing::Prepare(Prepared.Data, MoveTemp(Plan), 0, Prepared, Error);
+}
+
 bool SameItinerary(const FRailwayPlan& A, const FRailwayPlan& B)
 {
     if (A.Sections.Num() != B.Sections.Num() || A.Stops.Num() != B.Stops.Num() || A.Sections.IsEmpty() ||
@@ -124,6 +209,12 @@ bool ARailwayTrain::GetCurrentTrackLocation(FRailwayTrackLocation& OutLocation) 
 
     // A manually placed train can start without a timetable. At intersecting tracks
     // require an unambiguous match; an explicit preview above disambiguates the crossing.
+    const FVector Origin = GetActorLocation();
+    if (ProjectionData.Get() == Data && ProjectionBuild == Data->Network.BuildId && ProjectionOrigin == Origin)
+    {
+        OutLocation = ProjectedLocation;
+        return OutLocation.TrackIndex != INDEX_NONE;
+    }
     for (int32 I = 0; I < Data->Network.Tracks.Num(); ++I)
     {
         const auto& Track = Data->Network.Tracks[I];
@@ -140,10 +231,22 @@ bool ARailwayTrain::GetCurrentTrackLocation(FRailwayTrackLocation& OutLocation) 
             D = B.OutVal > A.OutVal ? FMath::Lerp(A.InVal, B.InVal, (Key - A.OutVal) / (B.OutVal - A.OutVal)) : A.InVal;
         }
         if (FVector::Dist(Track.PositionAt(D), GetActorLocation()) > Railway::Routing::JunctionToleranceCm) continue;
-        if (OutLocation.TrackIndex != INDEX_NONE) { OutLocation = {}; return false; }
+        if (OutLocation.TrackIndex != INDEX_NONE) { OutLocation = {}; break; }
         OutLocation = {I, D};
     }
+    ProjectionData = Data;
+    ProjectionBuild = Data->Network.BuildId;
+    ProjectionOrigin = Origin;
+    ProjectedLocation = OutLocation;
     return OutLocation.TrackIndex != INDEX_NONE;
+}
+
+bool ARailwayTrain::IsCurrentTrackLoop() const
+{
+    FRailwayTrackLocation At;
+    const auto* Data = GetRailwayData();
+    return Data && GetCurrentTrackLocation(At) && Data->Network.Tracks.IsValidIndex(At.TrackIndex) &&
+        Data->Network.Tracks[At.TrackIndex].IsLoop();
 }
 
 bool ARailwayTrain::ReplacePreparedRoute(const FRailwayPlan& Plan, FString& OutError, int32 SectionHint)
@@ -166,9 +269,30 @@ bool ARailwayTrain::ReplacePreparedRoute(const FRailwayPlan& Plan, FString& OutE
     TOptional<double> SharedPrefixDistance;
     if (SharesPrefixThrough(ActivePlan, Prepared.Plan, Leg) && Distance <= Prepared.SectionEnds[Leg])
         SharedPrefixDistance = Distance;
-    double Mapped;
-    if (!Railway::Geometry::FindPlanDistance(Prepared.Data->Network, Prepared.Plan, Prepared.SectionEnds, Current, SectionHint,
-        SharedPrefixDistance, Mapped, OutError)) return false;
+    const auto& N = Prepared.Data->Network;
+    double Mapped = 0;
+    using Railway::Geometry::ELocationMatch;
+    const auto Match = Railway::Geometry::FindPlanDistance(N, Prepared.Plan, Prepared.SectionEnds, Current, SectionHint,
+        SharedPrefixDistance, Mapped, OutError);
+    const auto& First = Prepared.Plan.Sections[0];
+    const auto& E = N.Edges[First.Leg.EdgeIndex];
+    if ((SectionHint == INDEX_NONE || SectionHint == 0) && E.TrackIndex == Current.TrackIndex && N.Tracks[E.TrackIndex].IsLoop())
+    {
+        const bool bAtTerminus = Distance == GetServiceEndDistance();
+        const bool bEntryBehind = (First.EntryDistance - Current.TrackDistance) * E.Sign() < 0;
+        const bool bFollowingService = Speed == 0 || (Speed > 0) != ActivePlan.bCabReversed;
+        const bool bHandover = bFollowingService && (bEntryBehind || (bAtTerminus && First.EntryDistance == Current.TrackDistance)) &&
+            EndsAtNextLoopSeam(*this, N, E, Current.TrackDistance);
+        const bool bNextLap = bHandover && (SectionHint == INDEX_NONE || bAtTerminus);
+        const bool bBeyondDestination = Match == ELocationMatch::Found && Prepared.Plan.bFinishAtLastStop &&
+            Mapped > Prepared.Plan.Stops.Last().Distance + UE_SMALL_NUMBER;
+        if (bNextLap || Match == ELocationMatch::Missing || (bBeyondDestination && SectionHint == INDEX_NONE))
+        {
+            if (!JoinLoopEntry(*this, Current, bHandover, Prepared, OutError)) return false;
+            return ContinuePreparedPlan(MoveTemp(Prepared), true, OutError);
+        }
+    }
+    if (Match != ELocationMatch::Found) return false;
     if (Prepared.Plan.bFinishAtLastStop && FMath::IsNearlyEqual(Mapped, Prepared.Plan.Stops.Last().Distance, UE_SMALL_NUMBER))
         Mapped = Prepared.Plan.Stops.Last().Distance;
     if (!Prepared.SetStartDistance(Mapped, OutError)) return false;
@@ -192,7 +316,19 @@ bool ARailwayTrain::ContinuePreparedPlan(FRailwayPreparedPlan&& Prepared, bool b
     }
 
     // Choose the cab end once for the new route. Never rotate the body to reverse travel.
-    if (FVector::DotProduct(GetActorForwardVector(), Prepared.StartPose.GetRotation().GetForwardVector()) < 0.0)
+    bool bFlipCab = FVector::DotProduct(GetActorForwardVector(), Prepared.StartPose.GetRotation().GetForwardVector()) < 0.0;
+    const auto& N = Prepared.Data->Network;
+    const auto& NewEdge = N.Edges[Prepared.Plan.Sections[Prepared.StartSection].Leg.EdgeIndex];
+    int32 CabEdge;
+    double Local;
+    if (N.Tracks[NewEdge.TrackIndex].IsLoop() && GetCabEdge(CabEdge, Local) && N.Edges[CabEdge].TrackIndex == NewEdge.TrackIndex)
+    {
+        // At a linear seam the two tangents can form a right angle. The cab still faces
+        // the same native spline direction when passing from Length to zero.
+        const bool bShouldReverseCab = N.Edges[CabEdge].IsReverse() != NewEdge.IsReverse();
+        bFlipCab = Prepared.Plan.bCabReversed != bShouldReverseCab;
+    }
+    if (bFlipCab)
     {
         Prepared.Plan.bCabReversed = !Prepared.Plan.bCabReversed;
         if (!Prepared.SetStartDistance(Prepared.StartDistance, OutError)) return false;

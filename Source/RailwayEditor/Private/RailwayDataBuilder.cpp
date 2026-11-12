@@ -302,7 +302,12 @@ struct FBuilder
             for (int32 Next : Departures[Edge.ToNode])
             {
                 if (Next == (I ^ 1)) continue; // opposite direction on the same physical span
-                if (FVector::DotProduct(ExitHeadings[I], EntryHeadings[Next]) > UE_KINDA_SMALL_NUMBER)
+                const FRailwayEdge& Out = Data.Edges[Next];
+                // The next span of the same closed spline is authored rail even at a linear corner.
+                // Ports identify the two sides of its seam as the same node.
+                const bool bThroughLoop = Data.Tracks[Edge.TrackIndex].IsLoop() &&
+                    Out.TrackIndex == Edge.TrackIndex && Out.IsReverse() == Edge.IsReverse();
+                if (bThroughLoop || FVector::DotProduct(ExitHeadings[I], EntryHeadings[Next]) > UE_KINDA_SMALL_NUMBER)
                     Data.Successors.Add(Next);
             }
             Edge.NumSuccessors = Data.Successors.Num() - Edge.FirstSuccessor;

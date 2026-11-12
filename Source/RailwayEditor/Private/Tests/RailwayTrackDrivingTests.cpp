@@ -2,7 +2,7 @@
 
 #include "Misc/AutomationTest.h"
 #include "Misc/ScopeExit.h"
-#include "EngineUtils.h"
+#include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "RailwayDispatchFixtures.h"
 #include "RailwayDataActor.h"
@@ -10,7 +10,7 @@
 #include "RailwayTrain.h"
 #include "Tests/NetTestHelpers.h"
 
-namespace
+namespace Railway::Tests
 {
 ARailwayDataActor* MakeFork(UWorld& World)
 {
@@ -44,6 +44,11 @@ ARailwayDataActor* MakeFork(UWorld& World)
     N.Stations[1].EdgeIndex = N.Stations[2].EdgeIndex = 2;
     return D;
 }
+}
+
+namespace
+{
+using Railway::Tests::MakeFork;
 
 void Simulate(ARailwayTrain* T, int32 Frames)
 {
@@ -198,6 +203,7 @@ bool FRailwayTurnoutMotion::RunTest(const FString&)
     if (!TestTrue(TEXT("Rebind moving free train after rebake"), Restored->TryLoadSaveGameData(Save, Error))) return false;
     Restored->GetUpcomingTrackChoices(false, Options);
     TestTrue(TEXT("Momentum and selected exit survived rebake"), Restored->Speed == T->Speed && Options.Num()==2 && Options[1].bActive);
+    T->Destroy(); // Restoring replaces the original vehicle at the same physical location.
     Restored->ServerSetDriveInput(1);
     Simulate(Restored, 180);
     FRailwayTrackLocation At;
@@ -253,7 +259,7 @@ bool FRailwayClientTurnoutMotion::RunTest(const FString&)
     TArray<FRailwayTrackChoice> Choices;
     if (!TestTrue(TEXT("Client sees scheduled main and legal siding"), Worlds.TickUntil([&]
     {
-        for (TActorIterator<ARailwayTrain> It(Client); It; ++It) Proxy = *It;
+        Proxy = Railway::Tests::OnlyTrain(*Client);
         if (!Proxy || !PC->FindComponentByClass<URailwayPlanControlComponent>()) return false;
         Proxy->GetUpcomingTrackChoices(false, Choices);
         return Choices.Num() == 2 && Choices[0].bUsedByCurrentPlan && Proxy->Speed > 150;
